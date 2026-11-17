@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "flarepost": {
+      "command": "uv",
+      "args": ["run", "flarepost"],
+      "protocolEra": "modern"
+    }
+  }
+}
