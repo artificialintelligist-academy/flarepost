@@ -1,0 +1,19 @@
+[project]
+name = "flarepost"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Javier Blanco", email = "107069387+javierblancodev@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "mcp[cli]>=2.3,<3",
+]
+
+[project.scripts]
+flarepost = "flarepost:main"
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
