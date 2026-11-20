@@ -4,6 +4,7 @@ from contextlib import closing
 from typing import Annotated
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field, StringConstraints
 
 from flarepost import storage
@@ -25,6 +26,10 @@ Description = Annotated[
     StringConstraints(strip_whitespace=True, max_length=2000),
     Field(description="What is happening, the impact and anything already tried."),
 ]
+IncidentId = Annotated[
+    int,
+    Field(ge=1, description="Numeric id of the incident, e.g. 3."),
+]
 
 
 @mcp.tool()
@@ -41,6 +46,19 @@ def create_incident(
     """
     with closing(storage.connect()) as conn:
         return storage.create_incident(conn, title, service, severity, description)
+
+
+@mcp.tool()
+def get_incident(incident_id: IncidentId) -> storage.Incident:
+    """Get the full details of an existing incident by its id."""
+    with closing(storage.connect()) as conn:
+        incident = storage.get_incident(conn, incident_id)
+    if incident is None:
+        raise ToolError(
+            f"Incident #{incident_id} does not exist. "
+            "Check the id with the user, or open a new incident with create_incident."
+        )
+    return incident
 
 
 def main() -> None:
