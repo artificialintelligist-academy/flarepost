@@ -37,6 +37,18 @@ IncidentId = Annotated[
     int,
     Field(ge=1, description="Numeric id of the incident, e.g. 3."),
 ]
+NoteText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=3, max_length=2000),
+    Field(description="What was found or done, e.g. 'Rolled back the last deploy.'"),
+]
+
+
+def _not_found(incident_id: int) -> ToolError:
+    return ToolError(
+        f"Incident #{incident_id} does not exist. "
+        "Find the right id with list_incidents, or open a new incident with create_incident."
+    )
 
 
 @mcp.tool()
@@ -61,10 +73,7 @@ def get_incident(incident_id: IncidentId) -> storage.Incident:
     with closing(storage.connect()) as conn:
         incident = storage.get_incident(conn, incident_id)
     if incident is None:
-        raise ToolError(
-            f"Incident #{incident_id} does not exist. "
-            "Find the right id with list_incidents, or open a new incident with create_incident."
-        )
+        raise _not_found(incident_id)
     return incident
 
 
@@ -91,6 +100,55 @@ def list_incidents(
     """
     with closing(storage.connect()) as conn:
         return storage.list_incidents(conn, status, service, severity)
+
+
+@mcp.tool()
+def update_incident(
+    incident_id: IncidentId,
+    status: Annotated[
+        storage.Status | None,
+        Field(description="New status. Incidents usually move open, investigating, mitigated, resolved."),
+    ] = None,
+    severity: Annotated[
+        storage.Severity | None,
+        Field(description="New severity, if the impact turned out bigger or smaller."),
+    ] = None,
+) -> storage.Incident:
+    """Change the status, the severity or both of an incident.
+
+    Set status to 'resolved' only once the service is healthy again.
+    Every change is added to the incident timeline automatically.
+    """
+    if status is None and severity is None:
+        raise ToolError("Nothing to update. Pass a new status, a new severity or both.")
+    with closing(storage.connect()) as conn:
+        incident = storage.get_incident(conn, incident_id)
+        if incident is None:
+            raise _not_found(incident_id)
+        if incident.status is storage.Status.RESOLVED:
+            raise ToolError(
+                f"Incident #{incident_id} is already resolved and can no longer change. "
+                "If the problem is back, open a new incident with create_incident."
+            )
+        return storage.update_incident(conn, incident_id, status, severity)
+
+
+@mcp.tool()
+def add_note(incident_id: IncidentId, message: NoteText) -> storage.TimelineEntry:
+    """Add a note to the incident timeline: findings, actions taken or decisions."""
+    with closing(storage.connect()) as conn:
+        if storage.get_incident(conn, incident_id) is None:
+            raise _not_found(incident_id)
+        return storage.add_note(conn, incident_id, message)
+
+
+@mcp.tool()
+def get_timeline(incident_id: IncidentId) -> list[storage.TimelineEntry]:
+    """Get everything that happened in an incident, oldest first."""
+    with closing(storage.connect()) as conn:
+        if storage.get_incident(conn, incident_id) is None:
+            raise _not_found(incident_id)
+        return storage.get_timeline(conn, incident_id)
 
 
 def main() -> None:
