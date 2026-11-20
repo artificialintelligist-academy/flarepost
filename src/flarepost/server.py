@@ -33,18 +33,14 @@ def create_incident(
     service: Service,
     severity: storage.Severity,
     description: Description = "",
-) -> str:
+) -> storage.Incident:
     """Open a new incident for a service that is failing or degraded.
 
     Use sev1 for a full outage, sev2 for a major degradation, sev3 for a
     partial or minor problem and sev4 for something to watch.
     """
     with closing(storage.connect()) as conn:
-        incident = storage.create_incident(conn, title, service, severity, description)
-    return (
-        f"Opened incident #{incident.id} ({incident.severity}) "
-        f"for {incident.service}: {incident.title}"
-    )
+        return storage.create_incident(conn, title, service, severity, description)
 
 
 def main() -> None:
