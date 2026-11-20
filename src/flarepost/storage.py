@@ -1,4 +1,4 @@
-"""SQLite storage for Flarepost incidents."""
+"""SQLite storage for Flarepost incidents and their timeline."""
 
 import os
 import sqlite3
@@ -19,7 +19,15 @@ CREATE TABLE IF NOT EXISTS incidents (
     description TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
-)
+);
+
+CREATE TABLE IF NOT EXISTS timeline (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id INTEGER NOT NULL REFERENCES incidents (id),
+    kind TEXT NOT NULL CHECK (kind IN ('created', 'status', 'severity', 'note')),
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -37,6 +45,13 @@ class Status(StrEnum):
     RESOLVED = "resolved"
 
 
+class EntryKind(StrEnum):
+    CREATED = "created"
+    STATUS = "status"
+    SEVERITY = "severity"
+    NOTE = "note"
+
+
 @dataclass(frozen=True)
 class Incident:
     id: int
@@ -49,6 +64,15 @@ class Incident:
     updated_at: datetime
 
 
+@dataclass(frozen=True)
+class TimelineEntry:
+    id: int
+    incident_id: int
+    kind: EntryKind
+    message: str
+    created_at: datetime
+
+
 def db_path() -> Path:
     return Path(os.environ.get("FLAREPOST_DB", DEFAULT_DB_PATH))
 
@@ -58,7 +82,7 @@ def connect() -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute(SCHEMA)
+    conn.executescript(SCHEMA)
     return conn
 
 
@@ -77,6 +101,7 @@ def create_incident(
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (title, service, severity, Status.OPEN, description, now.isoformat(), now.isoformat()),
         )
+        _add_entry(conn, cursor.lastrowid, EntryKind.CREATED, f"Incident opened as {severity}", now)
     return Incident(
         id=cursor.lastrowid,
         title=title,
@@ -119,6 +144,68 @@ def list_incidents(
     return [_to_incident(row) for row in conn.execute(query, params)]
 
 
+def update_incident(
+    conn: sqlite3.Connection,
+    incident_id: int,
+    status: Status | None = None,
+    severity: Severity | None = None,
+) -> Incident | None:
+    current = get_incident(conn, incident_id)
+    if current is None:
+        return None
+
+    now = datetime.now(UTC)
+    new_status = status or current.status
+    new_severity = severity or current.severity
+    with conn:
+        conn.execute(
+            "UPDATE incidents SET status = ?, severity = ?, updated_at = ? WHERE id = ?",
+            (new_status, new_severity, now.isoformat(), incident_id),
+        )
+        if new_status != current.status:
+            message = f"Status changed from {current.status} to {new_status}"
+            _add_entry(conn, incident_id, EntryKind.STATUS, message, now)
+        if new_severity != current.severity:
+            message = f"Severity changed from {current.severity} to {new_severity}"
+            _add_entry(conn, incident_id, EntryKind.SEVERITY, message, now)
+    return get_incident(conn, incident_id)
+
+
+def add_note(conn: sqlite3.Connection, incident_id: int, message: str) -> TimelineEntry:
+    now = datetime.now(UTC)
+    with conn:
+        entry_id = _add_entry(conn, incident_id, EntryKind.NOTE, message, now)
+    return TimelineEntry(
+        id=entry_id,
+        incident_id=incident_id,
+        kind=EntryKind.NOTE,
+        message=message,
+        created_at=now,
+    )
+
+
+def get_timeline(conn: sqlite3.Connection, incident_id: int) -> list[TimelineEntry]:
+    rows = conn.execute(
+        "SELECT * FROM timeline WHERE incident_id = ? ORDER BY created_at, id",
+        (incident_id,),
+    )
+    return [_to_entry(row) for row in rows]
+
+
+def _add_entry(
+    conn: sqlite3.Connection,
+    incident_id: int,
+    kind: EntryKind,
+    message: str,
+    now: datetime,
+) -> int:
+    cursor = conn.execute(
+        "INSERT INTO timeline (incident_id, kind, message, created_at) VALUES (?, ?, ?, ?)",
+        (incident_id, kind, message, now.isoformat()),
+    )
+    return cursor.lastrowid
+
+
 def _to_incident(row: sqlite3.Row) -> Incident:
     return Incident(
         id=row["id"],
@@ -129,4 +216,14 @@ def _to_incident(row: sqlite3.Row) -> Incident:
         description=row["description"],
         created_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _to_entry(row: sqlite3.Row) -> TimelineEntry:
+    return TimelineEntry(
+        id=row["id"],
+        incident_id=row["incident_id"],
+        kind=EntryKind(row["kind"]),
+        message=row["message"],
+        created_at=datetime.fromisoformat(row["created_at"]),
     )
