@@ -94,12 +94,27 @@ def get_incident(conn: sqlite3.Connection, incident_id: int) -> Incident | None:
     return _to_incident(row) if row else None
 
 
-def list_incidents(conn: sqlite3.Connection, status: Status | None = None) -> list[Incident]:
-    query = "SELECT * FROM incidents"
-    params: tuple[str, ...] = ()
+def list_incidents(
+    conn: sqlite3.Connection,
+    status: Status | None = None,
+    service: str | None = None,
+    severity: Severity | None = None,
+) -> list[Incident]:
+    conditions: list[str] = []
+    params: list[str] = []
     if status is not None:
-        query += " WHERE status = ?"
-        params = (status,)
+        conditions.append("status = ?")
+        params.append(status)
+    if service is not None:
+        conditions.append("service = ?")
+        params.append(service)
+    if severity is not None:
+        conditions.append("severity = ?")
+        params.append(severity)
+
+    query = "SELECT * FROM incidents"
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY created_at DESC"
     return [_to_incident(row) for row in conn.execute(query, params)]
 
