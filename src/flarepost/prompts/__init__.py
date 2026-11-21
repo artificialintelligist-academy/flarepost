@@ -1,0 +1,1 @@
+"""MCP prompts: conversations the user can start from the host. Each module has register()."""
