@@ -1,0 +1,1 @@
+"""The Flarepost copilot: our own MCP client, built up during Part 5."""
