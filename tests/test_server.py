@@ -115,3 +115,18 @@ async def test_post_to_slack_without_config_records_nothing(client: Client):
     assert result.is_error
     assert "not configured" in text_of(result)
     assert await timeline_kinds(client, incident["id"]) == ["created"]
+
+
+async def test_lists_a_runbook_per_service(client: Client):
+    result = await client.list_resources()
+    uris = {str(resource.uri) for resource in result.resources}
+    assert {
+        "flarepost://runbooks/auth-service",
+        "flarepost://runbooks/checkout-api",
+        "flarepost://runbooks/payments-api",
+    } <= uris
+
+
+async def test_reads_the_checkout_runbook(client: Client):
+    result = await client.read_resource("flarepost://runbooks/checkout-api")
+    assert result.contents[0].text.startswith("# Runbook: checkout-api")
