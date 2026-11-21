@@ -2,6 +2,7 @@
 
 from mcp.server import CacheHint, MCPServer
 
+from flarepost import completions
 from flarepost.prompts import postmortem
 from flarepost.resources import incidents as incident_resources
 from flarepost.resources import runbooks
@@ -27,6 +28,7 @@ notify.register(mcp)
 runbooks.register(mcp)
 incident_resources.register(mcp)
 postmortem.register(mcp)
+completions.register(mcp)
 
 
 def main() -> None:

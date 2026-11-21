@@ -10,6 +10,8 @@ from flarepost import storage
 from flarepost.domain import Incident, TimelineEntry
 
 BASE_URI = "flarepost://incidents"
+INCIDENT_TEMPLATE = f"{BASE_URI}/{{incident_id}}"
+TIMELINE_TEMPLATE = f"{BASE_URI}/{{incident_id}}/timeline"
 
 
 def incident_uri(incident_id: int) -> str:
@@ -62,13 +64,13 @@ def _not_found(raw: str) -> ResourceNotFoundError:
 
 def register(mcp: MCPServer) -> None:
     mcp.resource(
-        f"{BASE_URI}/{{incident_id}}",
+        INCIDENT_TEMPLATE,
         name="incident",
         title="Incident",
         mime_type="application/json",
     )(incident)
     mcp.resource(
-        f"{BASE_URI}/{{incident_id}}/timeline",
+        TIMELINE_TEMPLATE,
         name="incident-timeline",
         title="Incident timeline",
         mime_type="application/json",
