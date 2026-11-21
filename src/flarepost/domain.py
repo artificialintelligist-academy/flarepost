@@ -45,3 +45,9 @@ class TimelineEntry:
     kind: EntryKind
     message: str
     created_at: datetime
+
+
+@dataclass(frozen=True)
+class IncidentPage:
+    incidents: list[Incident]
+    next_cursor: str | None

@@ -1,5 +1,7 @@
 """Tools to open, find and change incidents."""
 
+import base64
+import json
 from contextlib import closing
 from typing import Annotated
 
@@ -8,9 +10,12 @@ from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from flarepost import storage
-from flarepost.domain import Incident, Severity, Status
+from flarepost.domain import Incident, IncidentPage, Severity, Status
 from flarepost.errors import incident_not_found
 from flarepost.schemas import Description, IncidentId, Service, Title
+
+DEFAULT_PAGE_SIZE = 20
+MAX_PAGE_SIZE = 100
 
 
 def create_incident(
@@ -50,15 +55,31 @@ def list_incidents(
         Severity | None,
         Field(description="Only incidents with this severity, e.g. 'sev1'."),
     ] = None,
-) -> list[Incident]:
-    """List incidents, newest first.
+    limit: Annotated[
+        int,
+        Field(ge=1, le=MAX_PAGE_SIZE, description="How many incidents to return in this page."),
+    ] = DEFAULT_PAGE_SIZE,
+    cursor: Annotated[
+        str | None,
+        Field(description="The next_cursor from a previous call, to get the following page."),
+    ] = None,
+) -> IncidentPage:
+    """List incidents, newest first, one page at a time.
 
-    All filters are optional and combine with AND. Call it with no filters
-    to see everything, or use it to find the id of an incident before
-    calling get_incident.
+    All filters are optional and combine with AND. If next_cursor is not
+    null there are more incidents: call again with the same filters and
+    that cursor. Use it to find the id of an incident before calling
+    get_incident.
     """
+    before_id = _decode_cursor(cursor) if cursor is not None else None
     with closing(storage.connect()) as conn:
-        return storage.list_incidents(conn, status, service, severity)
+        found = storage.list_incidents(conn, status, service, severity, before_id, limit + 1)
+    page = found[:limit]
+    has_more = len(found) > limit
+    return IncidentPage(
+        incidents=page,
+        next_cursor=_encode_cursor(page[-1].id) if has_more else None,
+    )
 
 
 def update_incident(
@@ -89,6 +110,23 @@ def update_incident(
                 "If the problem is back, open a new incident with create_incident."
             )
         return storage.update_incident(conn, incident_id, status, severity)
+
+
+def _encode_cursor(before_id: int) -> str:
+    return base64.urlsafe_b64encode(json.dumps({"before": before_id}).encode()).decode()
+
+
+def _decode_cursor(cursor: str) -> int:
+    try:
+        before_id = json.loads(base64.urlsafe_b64decode(cursor.encode()))["before"]
+        if not isinstance(before_id, int) or before_id < 1:
+            raise ValueError
+        return before_id
+    except (ValueError, KeyError, TypeError):
+        raise ToolError(
+            "That cursor is not valid. Call list_incidents without a cursor to start "
+            "again from the newest incidents."
+        ) from None
 
 
 def register(mcp: MCPServer) -> None:
