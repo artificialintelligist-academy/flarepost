@@ -1,6 +1,7 @@
 """Connect to Flarepost as an MCP client: show what it offers, or answer a question with an LLM."""
 
 import argparse
+import logging
 import os
 import sys
 
@@ -9,6 +10,7 @@ from anthropic import AsyncAnthropic
 from mcp import Client, StdioServerParameters
 
 from flarepost.copilot.agent import ask
+from flarepost.copilot.elicitation import ask_in_terminal
 
 # Over stdio the server only inherits a minimal allow-list of variables,
 # so anything Flarepost needs has to be passed on explicitly. The Anthropic
@@ -50,7 +52,7 @@ async def describe(client: Client) -> str:
 
 
 async def run(question: str | None) -> None:
-    async with Client(server_parameters()) as client:
+    async with Client(server_parameters(), elicitation_callback=ask_in_terminal) as client:
         if question is None:
             print(await describe(client))
         else:
@@ -58,6 +60,9 @@ async def run(question: str | None) -> None:
 
 
 def main() -> None:
+    # Importing Flarepost sets up the SDK's logging at INFO, and the Anthropic SDK
+    # logs every HTTP request through the httpx2 logger. Keep only warnings.
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
     parser = argparse.ArgumentParser(description="The Flarepost on-call copilot.")
     parser.add_argument("question", nargs="?", help="a question for the copilot; omit it for a report")
     args = parser.parse_args()

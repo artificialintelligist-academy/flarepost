@@ -1,4 +1,4 @@
-"""Tools to open, find and change incidents."""
+"""Tools to open, find, change and resolve incidents."""
 
 import base64
 import json
@@ -6,18 +6,26 @@ from contextlib import closing
 from typing import Annotated
 
 from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
+from mcp.server.mcpserver import AcceptedElicitation, Context, Elicit, ElicitationResult, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import Field
+from mcp.types import ClientCapabilities, ElicitationCapability
+from pydantic import BaseModel, Field
 
 from flarepost import storage
-from flarepost.domain import Incident, IncidentPage, Severity, Status
+from flarepost.domain import Incident, IncidentPage, ResolvedIncident, Severity, Status
 from flarepost.errors import incident_not_found
 from flarepost.resources.incidents import notify_incident_changed
-from flarepost.schemas import Description, IncidentId, Service, Title
+from flarepost.schemas import Description, IncidentId, ResolutionSummary, Service, Title
 
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
+ELICITATION = ClientCapabilities(elicitation=ElicitationCapability())
+
+
+class Resolution(BaseModel):
+    """What the user is asked for when the model resolves without a summary."""
+
+    summary: ResolutionSummary
 
 
 def create_incident(
@@ -89,7 +97,7 @@ async def update_incident(
     ctx: Context,
     status: Annotated[
         Status | None,
-        Field(description="New status. Incidents usually move open, investigating, mitigated, resolved."),
+        Field(description="New status: open, investigating or mitigated. To resolve, use resolve_incident."),
     ] = None,
     severity: Annotated[
         Severity | None,
@@ -98,23 +106,76 @@ async def update_incident(
 ) -> Incident:
     """Change the status, the severity or both of an incident.
 
-    Set status to 'resolved' only once the service is healthy again.
-    Every change is added to the incident timeline automatically.
+    Every change is added to the incident timeline automatically. To resolve
+    an incident use resolve_incident, which also records what fixed it.
     """
     if status is None and severity is None:
         raise ToolError("Nothing to update. Pass a new status, a new severity or both.")
+    if status is Status.RESOLVED:
+        raise ToolError(
+            "To resolve an incident use resolve_incident, which also records what fixed it."
+        )
     with closing(storage.connect()) as conn:
-        incident = storage.get_incident(conn, incident_id)
-        if incident is None:
-            raise incident_not_found(incident_id)
-        if incident.status is Status.RESOLVED:
-            raise ToolError(
-                f"Incident #{incident_id} is already resolved and can no longer change. "
-                "If the problem is back, open a new incident with create_incident."
-            )
+        _check_not_resolved(conn, incident_id)
         updated = storage.update_incident(conn, incident_id, status, severity)
     await notify_incident_changed(ctx, incident_id)
     return updated
+
+
+async def ask_for_resolution(
+    incident_id: int, summary: str | None, ctx: Context
+) -> Resolution | Elicit[Resolution]:
+    """Resolver for resolve_incident. With MRTR it runs again on the retry, so it only reads."""
+    with closing(storage.connect()) as conn:
+        _check_not_resolved(conn, incident_id)
+    if summary:
+        return Resolution(summary=summary)
+    if not ctx.session.check_client_capability(ELICITATION):
+        raise ToolError(
+            "Resolving needs a summary of what fixed the incident. Ask the user, then call "
+            "resolve_incident again with summary."
+        )
+    return Elicit(
+        f"How was incident #{incident_id} fixed? This goes into its timeline and postmortem.",
+        Resolution,
+    )
+
+
+async def resolve_incident(
+    incident_id: IncidentId,
+    resolution: Annotated[ElicitationResult[Resolution], Resolve(ask_for_resolution)],
+    ctx: Context,
+    summary: Annotated[
+        ResolutionSummary | None,
+        Field(description="What fixed it, if you know. If omitted, the user is asked."),
+    ] = None,
+) -> ResolvedIncident:
+    """Resolve an incident once the service is healthy again, recording what fixed it.
+
+    Pass summary if the conversation already says what fixed it; otherwise
+    the user is asked for it. The result includes the resolution that was
+    recorded, because an answer given to the server is not shown to you.
+    """
+    if not isinstance(resolution, AcceptedElicitation):
+        raise ToolError(
+            f"Incident #{incident_id} was not resolved: the user did not give a summary."
+        )
+    text = resolution.data.summary
+    with closing(storage.connect()) as conn:
+        resolved = storage.resolve_incident(conn, incident_id, text)
+    await notify_incident_changed(ctx, incident_id)
+    return ResolvedIncident(incident=resolved, resolution=text)
+
+
+def _check_not_resolved(conn, incident_id: int) -> None:
+    incident = storage.get_incident(conn, incident_id)
+    if incident is None:
+        raise incident_not_found(incident_id)
+    if incident.status is Status.RESOLVED:
+        raise ToolError(
+            f"Incident #{incident_id} is already resolved and can no longer change. "
+            "If the problem is back, open a new incident with create_incident."
+        )
 
 
 def _encode_cursor(before_id: int) -> str:
@@ -135,5 +196,5 @@ def _decode_cursor(cursor: str) -> int:
 
 
 def register(mcp: MCPServer) -> None:
-    for tool in (create_incident, get_incident, list_incidents, update_incident):
+    for tool in (create_incident, get_incident, list_incidents, update_incident, resolve_incident):
         mcp.tool()(tool)

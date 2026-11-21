@@ -33,3 +33,8 @@ SlackText = Annotated[
     StringConstraints(strip_whitespace=True, min_length=3, max_length=1000),
     Field(description="The update for the team, e.g. 'Rolled back the deploy, error rate is back to normal.'"),
 ]
+ResolutionSummary = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=10, max_length=1000),
+    Field(description="What fixed the incident, in one or two sentences."),
+]

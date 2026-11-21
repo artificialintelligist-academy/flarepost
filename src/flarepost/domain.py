@@ -51,3 +51,9 @@ class TimelineEntry:
 class IncidentPage:
     incidents: list[Incident]
     next_cursor: str | None
+
+
+@dataclass(frozen=True)
+class ResolvedIncident:
+    incident: Incident
+    resolution: str
