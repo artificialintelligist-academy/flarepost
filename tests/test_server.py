@@ -75,10 +75,10 @@ async def test_list_incidents_filters_by_service(client: Client):
 
 
 async def test_changes_and_notes_go_to_the_timeline(client: Client):
-    incident = await create(client, severity="sev2")
+    incident = await create(client, severity="sev3")
     await client.call_tool(
         "update_incident",
-        {"incident_id": incident["id"], "status": "investigating", "severity": "sev1"},
+        {"incident_id": incident["id"], "status": "investigating", "severity": "sev2"},
     )
     await client.call_tool(
         "add_note", {"incident_id": incident["id"], "message": "Rolled back the last deploy."}

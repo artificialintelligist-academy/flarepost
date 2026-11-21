@@ -42,6 +42,7 @@ async def test_summary_from_the_model_resolves_without_asking(client: Client):
         "resolve_incident", {"incident_id": incident_id, "summary": "Rolled back v2.31.0."}
     )
 
+    assert result.structured_content["resolved"] is True
     assert result.structured_content["incident"]["status"] == "resolved"
     assert result.structured_content["resolution"] == "Rolled back v2.31.0."
     assert (await timeline(client, incident_id))[-1] == "Resolution: Rolled back v2.31.0."
@@ -63,19 +64,22 @@ async def test_the_user_is_asked_through_mrtr_and_the_model_sees_the_answer():
         result = await client.call_tool("resolve_incident", {"incident_id": incident_id})
 
         assert user.asked == [f"How was incident #{incident_id} fixed? This goes into its timeline and postmortem."]
+        assert result.structured_content["resolved"] is True
         assert result.structured_content["incident"]["status"] == "resolved"
         assert result.structured_content["resolution"] == user.summary
         assert (await timeline(client, incident_id))[-1] == f"Resolution: {user.summary}"
 
 
-async def test_declining_leaves_the_incident_open():
-    async with Client(mcp, raise_exceptions=True, elicitation_callback=User("decline")) as client:
+@pytest.mark.parametrize(("action", "words"), [("decline", "said no"), ("cancel", "without answering")])
+async def test_a_refusal_leaves_the_incident_open_and_is_not_an_error(action: str, words: str):
+    async with Client(mcp, raise_exceptions=True, elicitation_callback=User(action)) as client:
         incident_id = await create(client)
         result = await client.call_tool("resolve_incident", {"incident_id": incident_id})
         incident = (await client.call_tool("get_incident", {"incident_id": incident_id})).structured_content
 
-    assert result.is_error
-    assert "was not resolved" in result.content[0].text
+    assert not result.is_error
+    assert result.structured_content["resolved"] is False
+    assert words in result.structured_content["reason"]
     assert incident["status"] == "open"
 
 
