@@ -1,0 +1,1 @@
+"""MCP resources grouped by what they expose. Each module adds its resources with register()."""
