@@ -82,9 +82,11 @@ def list_incidents(
     status: Status | None = None,
     service: str | None = None,
     severity: Severity | None = None,
+    before_id: int | None = None,
+    limit: int | None = None,
 ) -> list[Incident]:
     conditions: list[str] = []
-    params: list[str] = []
+    params: list[object] = []
     if status is not None:
         conditions.append("status = ?")
         params.append(status)
@@ -94,11 +96,17 @@ def list_incidents(
     if severity is not None:
         conditions.append("severity = ?")
         params.append(severity)
+    if before_id is not None:
+        conditions.append("id < ?")
+        params.append(before_id)
 
     query = "SELECT * FROM incidents"
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
-    query += " ORDER BY created_at DESC"
+    query += " ORDER BY id DESC"
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
     return [_to_incident(row) for row in conn.execute(query, params)]
 
 

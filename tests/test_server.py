@@ -69,7 +69,7 @@ async def test_list_incidents_filters_by_service(client: Client):
     await create(client, title="Login latency above 2 seconds", service="auth-service", severity="sev2")
 
     result = await client.call_tool("list_incidents", {"service": "auth-service"})
-    services = [incident["service"] for incident in result.structured_content["result"]]
+    services = [incident["service"] for incident in result.structured_content["incidents"]]
     assert services == ["auth-service"]
 
 
@@ -161,3 +161,31 @@ async def test_reads_a_timeline_as_a_resource(client: Client):
 async def test_missing_incident_resource_is_a_protocol_error(client: Client):
     with pytest.raises(MCPError, match="does not exist"):
         await client.read_resource("flarepost://incidents/999")
+
+
+async def test_list_incidents_walks_every_page_once(client: Client):
+    created = [await create(client, title=f"Checkout incident number {n}") for n in range(5)]
+
+    seen: list[int] = []
+    cursor = None
+    while True:
+        arguments = {"limit": 2} if cursor is None else {"limit": 2, "cursor": cursor}
+        page = (await client.call_tool("list_incidents", arguments)).structured_content
+        assert len(page["incidents"]) <= 2
+        seen += [incident["id"] for incident in page["incidents"]]
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+
+    assert seen == sorted((incident["id"] for incident in created), reverse=True)
+
+
+async def test_list_incidents_rejects_a_made_up_cursor(client: Client):
+    result = await client.call_tool("list_incidents", {"cursor": "page-2"})
+    assert result.is_error
+    assert "without a cursor" in text_of(result)
+
+
+async def test_list_incidents_caps_the_page_size(client: Client):
+    result = await client.call_tool("list_incidents", {"limit": 500})
+    assert result.is_error
