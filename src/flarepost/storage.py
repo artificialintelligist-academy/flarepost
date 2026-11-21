@@ -110,6 +110,21 @@ def list_incidents(
     return [_to_incident(row) for row in conn.execute(query, params)]
 
 
+def incident_ids_starting_with(
+    conn: sqlite3.Connection, prefix: str, limit: int
+) -> tuple[list[int], int]:
+    """Ids whose digits start with prefix, newest first, and how many match in total."""
+    pattern = f"{prefix}%"
+    total = conn.execute(
+        "SELECT COUNT(*) FROM incidents WHERE CAST(id AS TEXT) LIKE ?", (pattern,)
+    ).fetchone()[0]
+    rows = conn.execute(
+        "SELECT id FROM incidents WHERE CAST(id AS TEXT) LIKE ? ORDER BY id DESC LIMIT ?",
+        (pattern, limit),
+    )
+    return [row["id"] for row in rows], total
+
+
 def update_incident(
     conn: sqlite3.Connection,
     incident_id: int,
