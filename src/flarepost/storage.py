@@ -2,10 +2,10 @@
 
 import os
 import sqlite3
-from dataclasses import dataclass
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
+
+from flarepost.domain import EntryKind, Incident, Severity, Status, TimelineEntry
 
 DEFAULT_DB_PATH = Path.home() / ".flarepost" / "flarepost.db"
 
@@ -29,48 +29,6 @@ CREATE TABLE IF NOT EXISTS timeline (
     created_at TEXT NOT NULL
 );
 """
-
-
-class Severity(StrEnum):
-    SEV1 = "sev1"
-    SEV2 = "sev2"
-    SEV3 = "sev3"
-    SEV4 = "sev4"
-
-
-class Status(StrEnum):
-    OPEN = "open"
-    INVESTIGATING = "investigating"
-    MITIGATED = "mitigated"
-    RESOLVED = "resolved"
-
-
-class EntryKind(StrEnum):
-    CREATED = "created"
-    STATUS = "status"
-    SEVERITY = "severity"
-    NOTE = "note"
-
-
-@dataclass(frozen=True)
-class Incident:
-    id: int
-    title: str
-    service: str
-    severity: Severity
-    status: Status
-    description: str
-    created_at: datetime
-    updated_at: datetime
-
-
-@dataclass(frozen=True)
-class TimelineEntry:
-    id: int
-    incident_id: int
-    kind: EntryKind
-    message: str
-    created_at: datetime
 
 
 def db_path() -> Path:
