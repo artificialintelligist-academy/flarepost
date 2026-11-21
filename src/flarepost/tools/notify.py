@@ -3,16 +3,18 @@
 from contextlib import closing
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from flarepost import storage
 from flarepost.domain import TimelineEntry
 from flarepost.errors import incident_not_found
 from flarepost.integrations import slack
+from flarepost.resources.incidents import notify_timeline_changed
 from flarepost.schemas import IncidentId, SlackText
 
 
-def post_to_slack(incident_id: IncidentId, message: SlackText) -> TimelineEntry:
+async def post_to_slack(incident_id: IncidentId, message: SlackText, ctx: Context) -> TimelineEntry:
     """Post an update about an incident to the team's Slack channel.
 
     Use it when people need to know: a new sev1 or sev2, an escalation, a
@@ -33,7 +35,9 @@ def post_to_slack(incident_id: IncidentId, message: SlackText) -> TimelineEntry:
             raise ToolError(
                 f"{error} The update was not posted. Tell the user so they can share it another way."
             ) from None
-        return storage.add_note(conn, incident_id, f"Posted to Slack: {message}")
+        entry = storage.add_note(conn, incident_id, f"Posted to Slack: {message}")
+    await notify_timeline_changed(ctx, incident_id)
+    return entry
 
 
 def register(mcp: MCPServer) -> None:

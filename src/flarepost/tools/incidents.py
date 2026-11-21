@@ -6,12 +6,14 @@ from contextlib import closing
 from typing import Annotated
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from flarepost import storage
 from flarepost.domain import Incident, IncidentPage, Severity, Status
 from flarepost.errors import incident_not_found
+from flarepost.resources.incidents import notify_incident_changed
 from flarepost.schemas import Description, IncidentId, Service, Title
 
 DEFAULT_PAGE_SIZE = 20
@@ -82,8 +84,9 @@ def list_incidents(
     )
 
 
-def update_incident(
+async def update_incident(
     incident_id: IncidentId,
+    ctx: Context,
     status: Annotated[
         Status | None,
         Field(description="New status. Incidents usually move open, investigating, mitigated, resolved."),
@@ -109,7 +112,9 @@ def update_incident(
                 f"Incident #{incident_id} is already resolved and can no longer change. "
                 "If the problem is back, open a new incident with create_incident."
             )
-        return storage.update_incident(conn, incident_id, status, severity)
+        updated = storage.update_incident(conn, incident_id, status, severity)
+    await notify_incident_changed(ctx, incident_id)
+    return updated
 
 
 def _encode_cursor(before_id: int) -> str:

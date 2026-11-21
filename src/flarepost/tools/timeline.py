@@ -3,19 +3,23 @@
 from contextlib import closing
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 
 from flarepost import storage
 from flarepost.domain import TimelineEntry
 from flarepost.errors import incident_not_found
+from flarepost.resources.incidents import notify_timeline_changed
 from flarepost.schemas import IncidentId, NoteText
 
 
-def add_note(incident_id: IncidentId, message: NoteText) -> TimelineEntry:
+async def add_note(incident_id: IncidentId, message: NoteText, ctx: Context) -> TimelineEntry:
     """Add a note to the incident timeline: findings, actions taken or decisions."""
     with closing(storage.connect()) as conn:
         if storage.get_incident(conn, incident_id) is None:
             raise incident_not_found(incident_id)
-        return storage.add_note(conn, incident_id, message)
+        entry = storage.add_note(conn, incident_id, message)
+    await notify_timeline_changed(ctx, incident_id)
+    return entry
 
 
 def get_timeline(incident_id: IncidentId) -> list[TimelineEntry]:
