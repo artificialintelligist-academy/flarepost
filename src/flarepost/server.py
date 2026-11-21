@@ -2,23 +2,28 @@
 
 from mcp.server import CacheHint, MCPServer
 
+from flarepost.resources import incidents as incident_resources
 from flarepost.resources import runbooks
-from flarepost.tools import incidents, notify, timeline
+from flarepost.tools import incidents as incident_tools
+from flarepost.tools import notify, timeline
 
 mcp = MCPServer(
     "Flarepost",
     cache_hints={
-        # Tools and the list of resources only change when we deploy, and they
-        # are the same for every user, so clients may reuse them for five minutes.
+        # These lists only change when we deploy and are the same for every
+        # user, so clients may reuse them for five minutes. resources/read is
+        # left uncached on purpose: incidents change all the time.
         "tools/list": CacheHint(ttl_ms=300_000, scope="public"),
         "resources/list": CacheHint(ttl_ms=300_000, scope="public"),
+        "resources/templates/list": CacheHint(ttl_ms=300_000, scope="public"),
     },
 )
 
-incidents.register(mcp)
+incident_tools.register(mcp)
 timeline.register(mcp)
 notify.register(mcp)
 runbooks.register(mcp)
+incident_resources.register(mcp)
 
 
 def main() -> None:

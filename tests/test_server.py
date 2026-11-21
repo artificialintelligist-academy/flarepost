@@ -1,7 +1,9 @@
 """Talk to Flarepost through MCP, the same way a host does."""
 
+import json
+
 import pytest
-from mcp import Client
+from mcp import Client, MCPError
 
 from flarepost.integrations import slack
 
@@ -130,3 +132,32 @@ async def test_lists_a_runbook_per_service(client: Client):
 async def test_reads_the_checkout_runbook(client: Client):
     result = await client.read_resource("flarepost://runbooks/checkout-api")
     assert result.contents[0].text.startswith("# Runbook: checkout-api")
+
+
+async def test_lists_the_incident_templates(client: Client):
+    result = await client.list_resource_templates()
+    templates = {template.uri_template for template in result.resource_templates}
+    assert templates == {
+        "flarepost://incidents/{incident_id}",
+        "flarepost://incidents/{incident_id}/timeline",
+    }
+
+
+async def test_reads_an_incident_as_a_resource(client: Client):
+    created = await create(client)
+
+    result = await client.read_resource(f"flarepost://incidents/{created['id']}")
+    assert json.loads(result.contents[0].text)["title"] == CHECKOUT["title"]
+
+
+async def test_reads_a_timeline_as_a_resource(client: Client):
+    created = await create(client)
+
+    result = await client.read_resource(f"flarepost://incidents/{created['id']}/timeline")
+    entries = json.loads(result.contents[0].text)
+    assert [entry["kind"] for entry in entries] == ["created"]
+
+
+async def test_missing_incident_resource_is_a_protocol_error(client: Client):
+    with pytest.raises(MCPError, match="does not exist"):
+        await client.read_resource("flarepost://incidents/999")
