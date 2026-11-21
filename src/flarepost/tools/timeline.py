@@ -1,0 +1,31 @@
+"""Tools to read and add to an incident timeline."""
+
+from contextlib import closing
+
+from mcp.server import MCPServer
+
+from flarepost import storage
+from flarepost.domain import TimelineEntry
+from flarepost.errors import incident_not_found
+from flarepost.schemas import IncidentId, NoteText
+
+
+def add_note(incident_id: IncidentId, message: NoteText) -> TimelineEntry:
+    """Add a note to the incident timeline: findings, actions taken or decisions."""
+    with closing(storage.connect()) as conn:
+        if storage.get_incident(conn, incident_id) is None:
+            raise incident_not_found(incident_id)
+        return storage.add_note(conn, incident_id, message)
+
+
+def get_timeline(incident_id: IncidentId) -> list[TimelineEntry]:
+    """Get everything that happened in an incident, oldest first."""
+    with closing(storage.connect()) as conn:
+        if storage.get_incident(conn, incident_id) is None:
+            raise incident_not_found(incident_id)
+        return storage.get_timeline(conn, incident_id)
+
+
+def register(mcp: MCPServer) -> None:
+    for tool in (add_note, get_timeline):
+        mcp.tool()(tool)

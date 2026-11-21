@@ -1,13 +1,8 @@
-"""Flarepost MCP server."""
-
-from contextlib import closing
-from typing import Annotated
+"""Flarepost MCP server: creates the server and plugs in every group of tools."""
 
 from mcp.server import CacheHint, MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import Field, StringConstraints
 
-from flarepost import slack, storage
+from flarepost.tools import incidents, notify, timeline
 
 mcp = MCPServer(
     "Flarepost",
@@ -18,167 +13,9 @@ mcp = MCPServer(
     },
 )
 
-Title = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=5, max_length=120),
-    Field(description="Short summary of what is broken, e.g. 'Checkout API returning 500 errors'."),
-]
-Service = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, pattern=r"^[a-z0-9][a-z0-9-]{1,62}$"),
-    Field(description="Affected service as a lowercase slug, e.g. 'checkout-api'."),
-]
-Description = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, max_length=2000),
-    Field(description="What is happening, the impact and anything already tried."),
-]
-IncidentId = Annotated[
-    int,
-    Field(ge=1, description="Numeric id of the incident, e.g. 3."),
-]
-NoteText = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=3, max_length=2000),
-    Field(description="What was found or done, e.g. 'Rolled back the last deploy.'"),
-]
-SlackText = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=3, max_length=1000),
-    Field(description="The update for the team, e.g. 'Rolled back the deploy, error rate is back to normal.'"),
-]
-
-
-def _not_found(incident_id: int) -> ToolError:
-    return ToolError(
-        f"Incident #{incident_id} does not exist. "
-        "Find the right id with list_incidents, or open a new incident with create_incident."
-    )
-
-
-@mcp.tool()
-def create_incident(
-    title: Title,
-    service: Service,
-    severity: storage.Severity,
-    description: Description = "",
-) -> storage.Incident:
-    """Open a new incident for a service that is failing or degraded.
-
-    Use sev1 for a full outage, sev2 for a major degradation, sev3 for a
-    partial or minor problem and sev4 for something to watch.
-    """
-    with closing(storage.connect()) as conn:
-        return storage.create_incident(conn, title, service, severity, description)
-
-
-@mcp.tool()
-def get_incident(incident_id: IncidentId) -> storage.Incident:
-    """Get the full details of an existing incident by its id."""
-    with closing(storage.connect()) as conn:
-        incident = storage.get_incident(conn, incident_id)
-    if incident is None:
-        raise _not_found(incident_id)
-    return incident
-
-
-@mcp.tool()
-def list_incidents(
-    status: Annotated[
-        storage.Status | None,
-        Field(description="Only incidents in this status, e.g. 'open'."),
-    ] = None,
-    service: Annotated[
-        str | None,
-        Field(description="Only incidents for this service slug, e.g. 'checkout-api'."),
-    ] = None,
-    severity: Annotated[
-        storage.Severity | None,
-        Field(description="Only incidents with this severity, e.g. 'sev1'."),
-    ] = None,
-) -> list[storage.Incident]:
-    """List incidents, newest first.
-
-    All filters are optional and combine with AND. Call it with no filters
-    to see everything, or use it to find the id of an incident before
-    calling get_incident.
-    """
-    with closing(storage.connect()) as conn:
-        return storage.list_incidents(conn, status, service, severity)
-
-
-@mcp.tool()
-def update_incident(
-    incident_id: IncidentId,
-    status: Annotated[
-        storage.Status | None,
-        Field(description="New status. Incidents usually move open, investigating, mitigated, resolved."),
-    ] = None,
-    severity: Annotated[
-        storage.Severity | None,
-        Field(description="New severity, if the impact turned out bigger or smaller."),
-    ] = None,
-) -> storage.Incident:
-    """Change the status, the severity or both of an incident.
-
-    Set status to 'resolved' only once the service is healthy again.
-    Every change is added to the incident timeline automatically.
-    """
-    if status is None and severity is None:
-        raise ToolError("Nothing to update. Pass a new status, a new severity or both.")
-    with closing(storage.connect()) as conn:
-        incident = storage.get_incident(conn, incident_id)
-        if incident is None:
-            raise _not_found(incident_id)
-        if incident.status is storage.Status.RESOLVED:
-            raise ToolError(
-                f"Incident #{incident_id} is already resolved and can no longer change. "
-                "If the problem is back, open a new incident with create_incident."
-            )
-        return storage.update_incident(conn, incident_id, status, severity)
-
-
-@mcp.tool()
-def add_note(incident_id: IncidentId, message: NoteText) -> storage.TimelineEntry:
-    """Add a note to the incident timeline: findings, actions taken or decisions."""
-    with closing(storage.connect()) as conn:
-        if storage.get_incident(conn, incident_id) is None:
-            raise _not_found(incident_id)
-        return storage.add_note(conn, incident_id, message)
-
-
-@mcp.tool()
-def get_timeline(incident_id: IncidentId) -> list[storage.TimelineEntry]:
-    """Get everything that happened in an incident, oldest first."""
-    with closing(storage.connect()) as conn:
-        if storage.get_incident(conn, incident_id) is None:
-            raise _not_found(incident_id)
-        return storage.get_timeline(conn, incident_id)
-
-
-@mcp.tool()
-def post_to_slack(incident_id: IncidentId, message: SlackText) -> storage.TimelineEntry:
-    """Post an update about an incident to the team's Slack channel.
-
-    Use it when people need to know: a new sev1 or sev2, an escalation, a
-    mitigation or the resolution. The post is also added to the timeline.
-    """
-    with closing(storage.connect()) as conn:
-        incident = storage.get_incident(conn, incident_id)
-        if incident is None:
-            raise _not_found(incident_id)
-        text = (
-            f"*[{incident.severity.upper()}] #{incident.id} {incident.title}*\n"
-            f"`{incident.service}` · {incident.status}\n"
-            f"{message}"
-        )
-        try:
-            slack.post_message(text)
-        except slack.SlackError as error:
-            raise ToolError(
-                f"{error} The update was not posted. Tell the user so they can share it another way."
-            ) from None
-        return storage.add_note(conn, incident_id, f"Posted to Slack: {message}")
+incidents.register(mcp)
+timeline.register(mcp)
+notify.register(mcp)
 
 
 def main() -> None:

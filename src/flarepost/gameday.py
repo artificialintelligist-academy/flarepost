@@ -6,6 +6,7 @@ from contextlib import closing
 from datetime import datetime
 
 from flarepost import storage
+from flarepost.domain import EntryKind, Incident, Severity, Status, TimelineEntry
 
 TITLE = "Checkout latency rising"
 SERVICE = "checkout-api"
@@ -17,7 +18,7 @@ SIGNALS = [
     "[monitor] Error rate at 35%. Most card payments are failing.",
 ]
 WORLD_PREFIXES = ("[monitor]", "[deploy-bot]")
-DONE = {storage.Status.MITIGATED, storage.Status.RESOLVED}
+DONE = {Status.MITIGATED, Status.RESOLVED}
 POLL_SECONDS = 2
 TIMEOUT_SECONDS = 30 * 60
 
@@ -30,7 +31,7 @@ def main() -> None:
     args = parser.parse_args()
 
     with closing(storage.connect()) as conn:
-        incident = storage.create_incident(conn, TITLE, SERVICE, storage.Severity.SEV3, DESCRIPTION)
+        incident = storage.create_incident(conn, TITLE, SERVICE, Severity.SEV3, DESCRIPTION)
     print(f"Game Day started. Incident #{incident.id}: {TITLE} ({SERVICE})")
     print("Handle it until it is mitigated. Press Ctrl+C to give up.\n")
 
@@ -59,8 +60,8 @@ def _run(incident_id: int, interval: float) -> None:
     print("\nTime is up, the incident was not mitigated.")
 
 
-def _show(incident: storage.Incident, entry: storage.TimelineEntry) -> None:
-    from_world = entry.kind is storage.EntryKind.CREATED or entry.message.startswith(WORLD_PREFIXES)
+def _show(incident: Incident, entry: TimelineEntry) -> None:
+    from_world = entry.kind is EntryKind.CREATED or entry.message.startswith(WORLD_PREFIXES)
     who = "" if from_world else "[team] "
     print(f"  {_elapsed(incident.created_at, entry.created_at)}  {who}{entry.message}")
 

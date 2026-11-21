@@ -1,0 +1,1 @@
+"""MCP tools grouped by what they work on. Each module adds its tools with register()."""

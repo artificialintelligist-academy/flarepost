@@ -3,7 +3,7 @@
 import pytest
 from mcp import Client
 
-from flarepost import slack
+from flarepost.integrations import slack
 
 pytestmark = pytest.mark.anyio
 
