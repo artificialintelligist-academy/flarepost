@@ -8,6 +8,16 @@ from mcp.server import MCPServer
 RUNBOOKS = files("flarepost.runbooks")
 
 
+def runbook_uri(service: str) -> str:
+    return f"flarepost://runbooks/{service}"
+
+
+def runbook_text(service: str) -> str | None:
+    """The runbook for a service, or None if the team has not written one."""
+    path = RUNBOOKS / f"{service}.md"
+    return path.read_text(encoding="utf-8") if path.is_file() else None
+
+
 def register(mcp: MCPServer) -> None:
     runbooks = sorted(
         (path for path in RUNBOOKS.iterdir() if path.name.endswith(".md")),
@@ -16,7 +26,7 @@ def register(mcp: MCPServer) -> None:
     for path in runbooks:
         service = path.name.removesuffix(".md")
         mcp.resource(
-            f"flarepost://runbooks/{service}",
+            runbook_uri(service),
             name=f"runbook-{service}",
             title=f"Runbook for {service}",
             description=f"What to check and do when {service} is failing.",

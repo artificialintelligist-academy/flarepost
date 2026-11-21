@@ -1,7 +1,8 @@
-"""Flarepost MCP server: creates the server and plugs in every tool and resource."""
+"""Flarepost MCP server: creates the server and plugs in every tool, resource and prompt."""
 
 from mcp.server import CacheHint, MCPServer
 
+from flarepost.prompts import postmortem
 from flarepost.resources import incidents as incident_resources
 from flarepost.resources import runbooks
 from flarepost.tools import incidents as incident_tools
@@ -16,6 +17,7 @@ mcp = MCPServer(
         "tools/list": CacheHint(ttl_ms=300_000, scope="public"),
         "resources/list": CacheHint(ttl_ms=300_000, scope="public"),
         "resources/templates/list": CacheHint(ttl_ms=300_000, scope="public"),
+        "prompts/list": CacheHint(ttl_ms=300_000, scope="public"),
     },
 )
 
@@ -24,6 +26,7 @@ timeline.register(mcp)
 notify.register(mcp)
 runbooks.register(mcp)
 incident_resources.register(mcp)
+postmortem.register(mcp)
 
 
 def main() -> None:
