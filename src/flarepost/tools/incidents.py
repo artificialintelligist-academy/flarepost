@@ -6,13 +6,13 @@ from contextlib import closing
 from typing import Annotated
 
 from mcp.server import MCPServer
-from mcp.server.mcpserver import AcceptedElicitation, Context, Elicit, ElicitationResult, Resolve
+from mcp.server.mcpserver import AcceptedElicitation, CancelledElicitation, Context, Elicit, ElicitationResult, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ClientCapabilities, ElicitationCapability
 from pydantic import BaseModel, Field
 
 from flarepost import storage
-from flarepost.domain import Incident, IncidentPage, ResolvedIncident, Severity, Status
+from flarepost.domain import Incident, IncidentPage, ResolvedIncident, Severity, Status, UpdatedIncident
 from flarepost.errors import incident_not_found
 from flarepost.resources.incidents import notify_incident_changed
 from flarepost.schemas import Description, IncidentId, ResolutionSummary, Service, Title
@@ -20,12 +20,22 @@ from flarepost.schemas import Description, IncidentId, ResolutionSummary, Servic
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 ELICITATION = ClientCapabilities(elicitation=ElicitationCapability())
+NO_ANSWER = (
+    "The user was asked directly, in a dialog you do not see, and closed it without "
+    "answering. Nothing was changed. Ask them in the conversation before trying again."
+)
 
 
 class Resolution(BaseModel):
     """What the user is asked for when the model resolves without a summary."""
 
     summary: ResolutionSummary
+
+
+class Escalation(BaseModel):
+    """What the user is asked before an incident is escalated to sev1."""
+
+    confirm: bool = Field(description="Escalate to sev1? Use it only for a full outage.")
 
 
 def create_incident(
@@ -92,8 +102,34 @@ def list_incidents(
     )
 
 
+async def ask_to_escalate(
+    incident_id: int,
+    ctx: Context,
+    severity: Severity | None = None,
+    confirm_sev1: bool = False,
+) -> Escalation | Elicit[Escalation]:
+    """Resolver for update_incident. With MRTR it runs again on the retry, so it only reads."""
+    with closing(storage.connect()) as conn:
+        current = _check_not_resolved(conn, incident_id)
+    if severity != Severity.SEV1 or current.severity == Severity.SEV1:
+        return Escalation(confirm=True)  # not an escalation to sev1, nothing to confirm
+    if ctx.session.check_client_capability(ELICITATION):
+        return Elicit(
+            f'Escalate incident #{incident_id} "{current.title}" from {current.severity} '
+            "to sev1? Sev1 means a full outage.",
+            Escalation,
+        )
+    if confirm_sev1:
+        return Escalation(confirm=True)
+    raise ToolError(
+        "Escalating to sev1 needs the user's confirmation. Ask them, and if they agree "
+        "call update_incident again with confirm_sev1 set to true."
+    )
+
+
 async def update_incident(
     incident_id: IncidentId,
+    escalation: Annotated[ElicitationResult[Escalation], Resolve(ask_to_escalate)],
     ctx: Context,
     status: Annotated[
         Status | None,
@@ -103,11 +139,20 @@ async def update_incident(
         Severity | None,
         Field(description="New severity, if the impact turned out bigger or smaller."),
     ] = None,
-) -> Incident:
+    confirm_sev1: Annotated[
+        bool,
+        Field(
+            description="Leave it out. Set it to true only after update_incident returned an error "
+            "asking for it and the user then confirmed in the conversation."
+        ),
+    ] = False,
+) -> UpdatedIncident:
     """Change the status, the severity or both of an incident.
 
-    Every change is added to the incident timeline automatically. To resolve
-    an incident use resolve_incident, which also records what fixed it.
+    Every change is added to the incident timeline automatically. Escalating
+    to sev1 needs the user's confirmation; if they do not give it, nothing
+    changes and reason says why. To resolve an incident use resolve_incident,
+    which also records what fixed it.
     """
     if status is None and severity is None:
         raise ToolError("Nothing to update. Pass a new status, a new severity or both.")
@@ -116,10 +161,19 @@ async def update_incident(
             "To resolve an incident use resolve_incident, which also records what fixed it."
         )
     with closing(storage.connect()) as conn:
-        _check_not_resolved(conn, incident_id)
-        updated = storage.update_incident(conn, incident_id, status, severity)
+        current = _check_not_resolved(conn, incident_id)
+        if not (isinstance(escalation, AcceptedElicitation) and escalation.data.confirm):
+            reason = _refusal(
+                escalation,
+                "The user was asked directly, in a dialog you do not see, and said no to "
+                "escalating this incident to sev1. Nothing was changed. Do not call "
+                f"update_incident again to escalate it; tell the user it stays at {current.severity}.",
+            )
+            return UpdatedIncident(incident=current, updated=False, reason=reason)
+        note = _escalation_note(ctx, current, severity)
+        updated = storage.update_incident(conn, incident_id, status, severity, note)
     await notify_incident_changed(ctx, incident_id)
-    return updated
+    return UpdatedIncident(incident=updated, updated=True)
 
 
 async def ask_for_resolution(
@@ -155,19 +209,40 @@ async def resolve_incident(
     Pass summary if the conversation already says what fixed it; otherwise
     the user is asked for it. The result includes the resolution that was
     recorded, because an answer given to the server is not shown to you.
+    If resolved is false, nothing changed and reason says why.
     """
     if not isinstance(resolution, AcceptedElicitation):
-        raise ToolError(
-            f"Incident #{incident_id} was not resolved: the user did not give a summary."
+        with closing(storage.connect()) as conn:
+            current = _check_not_resolved(conn, incident_id)
+        reason = _refusal(
+            resolution,
+            "The user was asked directly, in a dialog you do not see, and said no to "
+            "resolving this incident now. Nothing was changed. Do not call resolve_incident "
+            "again for it; tell the user it stays open.",
         )
+        return ResolvedIncident(incident=current, resolved=False, reason=reason)
     text = resolution.data.summary
     with closing(storage.connect()) as conn:
         resolved = storage.resolve_incident(conn, incident_id, text)
     await notify_incident_changed(ctx, incident_id)
-    return ResolvedIncident(incident=resolved, resolution=text)
+    return ResolvedIncident(incident=resolved, resolved=True, resolution=text)
 
 
-def _check_not_resolved(conn, incident_id: int) -> None:
+def _refusal(answer: ElicitationResult, declined: str) -> str:
+    """Why nothing changed: the user said no, or closed the question without choosing."""
+    return NO_ANSWER if isinstance(answer, CancelledElicitation) else declined
+
+
+def _escalation_note(ctx: Context, current: Incident, severity: Severity | None) -> str | None:
+    """How an escalation to sev1 was confirmed, for the timeline and the postmortem."""
+    if severity != Severity.SEV1 or current.severity == Severity.SEV1:
+        return None
+    if ctx.session.check_client_capability(ELICITATION):
+        return "Escalation to sev1 confirmed by the user"
+    return "Escalation to sev1 confirmed in conversation"
+
+
+def _check_not_resolved(conn, incident_id: int) -> Incident:
     incident = storage.get_incident(conn, incident_id)
     if incident is None:
         raise incident_not_found(incident_id)
@@ -176,6 +251,7 @@ def _check_not_resolved(conn, incident_id: int) -> None:
             f"Incident #{incident_id} is already resolved and can no longer change. "
             "If the problem is back, open a new incident with create_incident."
         )
+    return incident
 
 
 def _encode_cursor(before_id: int) -> str:

@@ -130,6 +130,7 @@ def update_incident(
     incident_id: int,
     status: Status | None = None,
     severity: Severity | None = None,
+    note: str | None = None,
 ) -> Incident | None:
     current = get_incident(conn, incident_id)
     if current is None:
@@ -149,6 +150,8 @@ def update_incident(
         if new_severity != current.severity:
             message = f"Severity changed from {current.severity} to {new_severity}"
             _add_entry(conn, incident_id, EntryKind.SEVERITY, message, now)
+        if note:
+            _add_entry(conn, incident_id, EntryKind.NOTE, note, now)
     return get_incident(conn, incident_id)
 
 

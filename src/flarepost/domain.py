@@ -54,6 +54,15 @@ class IncidentPage:
 
 
 @dataclass(frozen=True)
+class UpdatedIncident:
+    incident: Incident
+    updated: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class ResolvedIncident:
     incident: Incident
-    resolution: str
+    resolved: bool
+    resolution: str | None = None
+    reason: str | None = None
