@@ -7,7 +7,7 @@ from mcp.server import CacheHint, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field, StringConstraints
 
-from flarepost import storage
+from flarepost import slack, storage
 
 mcp = MCPServer(
     "Flarepost",
@@ -41,6 +41,11 @@ NoteText = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=3, max_length=2000),
     Field(description="What was found or done, e.g. 'Rolled back the last deploy.'"),
+]
+SlackText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=3, max_length=1000),
+    Field(description="The update for the team, e.g. 'Rolled back the deploy, error rate is back to normal.'"),
 ]
 
 
@@ -149,6 +154,31 @@ def get_timeline(incident_id: IncidentId) -> list[storage.TimelineEntry]:
         if storage.get_incident(conn, incident_id) is None:
             raise _not_found(incident_id)
         return storage.get_timeline(conn, incident_id)
+
+
+@mcp.tool()
+def post_to_slack(incident_id: IncidentId, message: SlackText) -> storage.TimelineEntry:
+    """Post an update about an incident to the team's Slack channel.
+
+    Use it when people need to know: a new sev1 or sev2, an escalation, a
+    mitigation or the resolution. The post is also added to the timeline.
+    """
+    with closing(storage.connect()) as conn:
+        incident = storage.get_incident(conn, incident_id)
+        if incident is None:
+            raise _not_found(incident_id)
+        text = (
+            f"*[{incident.severity.upper()}] #{incident.id} {incident.title}*\n"
+            f"`{incident.service}` · {incident.status}\n"
+            f"{message}"
+        )
+        try:
+            slack.post_message(text)
+        except slack.SlackError as error:
+            raise ToolError(
+                f"{error} The update was not posted. Tell the user so they can share it another way."
+            ) from None
+        return storage.add_note(conn, incident_id, f"Posted to Slack: {message}")
 
 
 def main() -> None:

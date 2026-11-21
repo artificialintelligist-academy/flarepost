@@ -2,7 +2,7 @@
   "mcpServers": {
     "flarepost": {
       "command": "uv",
-      "args": ["run", "flarepost"],
+      "args": ["run", "--env-file", ".env", "flarepost"],
       "protocolEra": "modern"
     }
   }
