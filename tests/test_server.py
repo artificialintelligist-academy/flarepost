@@ -38,6 +38,7 @@ async def test_exposes_all_tools(client: Client):
         "get_incident",
         "list_incidents",
         "update_incident",
+        "resolve_incident",
         "add_note",
         "get_timeline",
         "post_to_slack",
@@ -88,7 +89,10 @@ async def test_changes_and_notes_go_to_the_timeline(client: Client):
 
 async def test_resolved_incident_cannot_change(client: Client):
     incident = await create(client)
-    await client.call_tool("update_incident", {"incident_id": incident["id"], "status": "resolved"})
+    await client.call_tool(
+        "resolve_incident",
+        {"incident_id": incident["id"], "summary": "Rolled back the last deploy."},
+    )
 
     result = await client.call_tool("update_incident", {"incident_id": incident["id"], "severity": "sev3"})
     assert result.is_error
@@ -189,3 +193,11 @@ async def test_list_incidents_rejects_a_made_up_cursor(client: Client):
 async def test_list_incidents_caps_the_page_size(client: Client):
     result = await client.call_tool("list_incidents", {"limit": 500})
     assert result.is_error
+
+
+async def test_update_incident_sends_resolving_to_resolve_incident(client: Client):
+    incident = await create(client)
+
+    result = await client.call_tool("update_incident", {"incident_id": incident["id"], "status": "resolved"})
+    assert result.is_error
+    assert "resolve_incident" in text_of(result)

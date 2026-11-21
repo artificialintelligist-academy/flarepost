@@ -152,6 +152,26 @@ def update_incident(
     return get_incident(conn, incident_id)
 
 
+def resolve_incident(conn: sqlite3.Connection, incident_id: int, summary: str) -> Incident | None:
+    """Resolve an incident and record what fixed it, in a single transaction."""
+    current = get_incident(conn, incident_id)
+    if current is None:
+        return None
+
+    now = datetime.now(UTC)
+    with conn:
+        conn.execute(
+            "UPDATE incidents SET status = ?, updated_at = ? WHERE id = ?",
+            (Status.RESOLVED, now.isoformat(), incident_id),
+        )
+        _add_entry(
+            conn, incident_id, EntryKind.STATUS,
+            f"Status changed from {current.status} to {Status.RESOLVED}", now,
+        )
+        _add_entry(conn, incident_id, EntryKind.NOTE, f"Resolution: {summary}", now)
+    return get_incident(conn, incident_id)
+
+
 def add_note(conn: sqlite3.Connection, incident_id: int, message: str) -> TimelineEntry:
     now = datetime.now(UTC)
     with conn:
