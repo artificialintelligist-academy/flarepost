@@ -1,13 +1,18 @@
-"""Connect to Flarepost as an MCP client and show what it offers."""
+"""Connect to Flarepost as an MCP client: show what it offers, or answer a question with an LLM."""
 
+import argparse
 import os
 import sys
 
 import anyio
+from anthropic import AsyncAnthropic
 from mcp import Client, StdioServerParameters
 
+from flarepost.copilot.agent import ask
+
 # Over stdio the server only inherits a minimal allow-list of variables,
-# so anything Flarepost needs has to be passed on explicitly.
+# so anything Flarepost needs has to be passed on explicitly. The Anthropic
+# key is not on the list: only the copilot talks to the LLM.
 PASSTHROUGH_ENV = ("FLAREPOST_DB", "FLAREPOST_SLACK_WEBHOOK_URL")
 
 
@@ -44,10 +49,16 @@ async def describe(client: Client) -> str:
     return "\n".join(lines)
 
 
-async def run() -> None:
+async def run(question: str | None) -> None:
     async with Client(server_parameters()) as client:
-        print(await describe(client))
+        if question is None:
+            print(await describe(client))
+        else:
+            print(await ask(client, AsyncAnthropic(), question))
 
 
 def main() -> None:
-    anyio.run(run)
+    parser = argparse.ArgumentParser(description="The Flarepost on-call copilot.")
+    parser.add_argument("question", nargs="?", help="a question for the copilot; omit it for a report")
+    args = parser.parse_args()
+    anyio.run(run, args.question)
