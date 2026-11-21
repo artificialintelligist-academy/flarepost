@@ -3,10 +3,32 @@
 from contextlib import closing
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
 
 from flarepost import storage
 from flarepost.domain import Incident, TimelineEntry
+
+BASE_URI = "flarepost://incidents"
+
+
+def incident_uri(incident_id: int) -> str:
+    return f"{BASE_URI}/{incident_id}"
+
+
+def timeline_uri(incident_id: int) -> str:
+    return f"{BASE_URI}/{incident_id}/timeline"
+
+
+async def notify_incident_changed(ctx: Context, incident_id: int) -> None:
+    """Tell subscribers that an incident and its timeline changed."""
+    await ctx.notify_resource_updated(incident_uri(incident_id))
+    await ctx.notify_resource_updated(timeline_uri(incident_id))
+
+
+async def notify_timeline_changed(ctx: Context, incident_id: int) -> None:
+    """Tell subscribers that only the timeline of an incident changed."""
+    await ctx.notify_resource_updated(timeline_uri(incident_id))
 
 
 def incident(incident_id: str) -> Incident:
@@ -40,13 +62,13 @@ def _not_found(raw: str) -> ResourceNotFoundError:
 
 def register(mcp: MCPServer) -> None:
     mcp.resource(
-        "flarepost://incidents/{incident_id}",
+        f"{BASE_URI}/{{incident_id}}",
         name="incident",
         title="Incident",
         mime_type="application/json",
     )(incident)
     mcp.resource(
-        "flarepost://incidents/{incident_id}/timeline",
+        f"{BASE_URI}/{{incident_id}}/timeline",
         name="incident-timeline",
         title="Incident timeline",
         mime_type="application/json",
