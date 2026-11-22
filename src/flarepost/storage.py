@@ -1,11 +1,12 @@
 """SQLite storage for Flarepost incidents and their timeline."""
 
 import os
+import secrets
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from flarepost.domain import EntryKind, Incident, Severity, Status, TimelineEntry
+from flarepost.domain import EntryKind, Incident, Severity, Status, StatusUpdateDraft, TimelineEntry
 
 DEFAULT_DB_PATH = Path.home() / ".flarepost" / "flarepost.db"
 
@@ -27,6 +28,13 @@ CREATE TABLE IF NOT EXISTS timeline (
     kind TEXT NOT NULL CHECK (kind IN ('created', 'status', 'severity', 'note')),
     message TEXT NOT NULL,
     created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS drafts (
+    id TEXT PRIMARY KEY,
+    incident_id INTEGER NOT NULL REFERENCES incidents (id),
+    message TEXT NOT NULL,
+    expires_at TEXT NOT NULL
 );
 """
 
@@ -196,6 +204,58 @@ def get_timeline(conn: sqlite3.Connection, incident_id: int) -> list[TimelineEnt
     return [_to_entry(row) for row in rows]
 
 
+def create_draft(
+    conn: sqlite3.Connection, incident_id: int, message: str, expires_at: datetime
+) -> StatusUpdateDraft:
+    """Save a draft under a new id that is opaque and impossible to guess (128 random bits)."""
+    draft_id = f"drf_{secrets.token_urlsafe(16)}"
+    with conn:
+        conn.execute(
+            "INSERT INTO drafts (id, incident_id, message, expires_at) VALUES (?, ?, ?, ?)",
+            (draft_id, incident_id, message, expires_at.isoformat()),
+        )
+    return StatusUpdateDraft(
+        draft_id=draft_id, incident_id=incident_id, message=message, expires_at=expires_at
+    )
+
+
+def get_draft(conn: sqlite3.Connection, draft_id: str) -> StatusUpdateDraft | None:
+    row = conn.execute("SELECT * FROM drafts WHERE id = ?", (draft_id,)).fetchone()
+    return _to_draft(row) if row else None
+
+
+def revise_draft(
+    conn: sqlite3.Connection, draft_id: str, message: str, expires_at: datetime
+) -> StatusUpdateDraft | None:
+    with conn:
+        conn.execute(
+            "UPDATE drafts SET message = ?, expires_at = ? WHERE id = ?",
+            (message, expires_at.isoformat(), draft_id),
+        )
+    return get_draft(conn, draft_id)
+
+
+def delete_draft(conn: sqlite3.Connection, draft_id: str) -> None:
+    with conn:
+        conn.execute("DELETE FROM drafts WHERE id = ?", (draft_id,))
+
+
+def finish_draft(conn: sqlite3.Connection, draft_id: str, note: str) -> TimelineEntry:
+    """Record a published draft in the timeline and use it up, in a single transaction."""
+    draft = get_draft(conn, draft_id)
+    now = datetime.now(UTC)
+    with conn:
+        entry_id = _add_entry(conn, draft.incident_id, EntryKind.NOTE, note, now)
+        conn.execute("DELETE FROM drafts WHERE id = ?", (draft_id,))
+    return TimelineEntry(
+        id=entry_id,
+        incident_id=draft.incident_id,
+        kind=EntryKind.NOTE,
+        message=note,
+        created_at=now,
+    )
+
+
 def _add_entry(
     conn: sqlite3.Connection,
     incident_id: int,
@@ -230,4 +290,13 @@ def _to_entry(row: sqlite3.Row) -> TimelineEntry:
         kind=EntryKind(row["kind"]),
         message=row["message"],
         created_at=datetime.fromisoformat(row["created_at"]),
+    )
+
+
+def _to_draft(row: sqlite3.Row) -> StatusUpdateDraft:
+    return StatusUpdateDraft(
+        draft_id=row["id"],
+        incident_id=row["incident_id"],
+        message=row["message"],
+        expires_at=datetime.fromisoformat(row["expires_at"]),
     )

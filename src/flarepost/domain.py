@@ -66,3 +66,11 @@ class ResolvedIncident:
     resolved: bool
     resolution: str | None = None
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class StatusUpdateDraft:
+    draft_id: str
+    incident_id: int
+    message: str
+    expires_at: datetime

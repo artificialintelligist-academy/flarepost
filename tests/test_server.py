@@ -42,6 +42,10 @@ async def test_exposes_all_tools(client: Client):
         "add_note",
         "get_timeline",
         "post_to_slack",
+        "draft_status_update",
+        "revise_status_update",
+        "publish_status_update",
+        "discard_status_update",
     }
 
 

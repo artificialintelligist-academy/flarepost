@@ -38,3 +38,8 @@ ResolutionSummary = Annotated[
     StringConstraints(strip_whitespace=True, min_length=10, max_length=1000),
     Field(description="What fixed the incident, in one or two sentences."),
 ]
+DraftId = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
+    Field(description="The draft_id returned by draft_status_update, e.g. 'drf_Q2x9...'."),
+]
