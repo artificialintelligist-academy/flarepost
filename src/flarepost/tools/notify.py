@@ -3,18 +3,21 @@
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 
+import anyio
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 
 from flarepost import storage
-from flarepost.domain import Incident, StatusUpdateDraft, TimelineEntry
+from flarepost.domain import Digest, Incident, Status, StatusUpdateDraft, TimelineEntry
 from flarepost.errors import incident_not_found
 from flarepost.integrations import slack
 from flarepost.resources.incidents import notify_timeline_changed
 from flarepost.schemas import DraftId, IncidentId, SlackText
 
 DRAFT_TTL = timedelta(hours=1)
+# Slack accepts about one incoming webhook message per second.
+SLACK_INTERVAL_SECONDS = 1.0
 
 
 async def post_to_slack(incident_id: IncidentId, message: SlackText, ctx: Context) -> TimelineEntry:
@@ -32,6 +35,32 @@ async def post_to_slack(incident_id: IncidentId, message: SlackText, ctx: Contex
         entry = storage.add_note(conn, incident_id, f"Posted to Slack: {message}")
     await notify_timeline_changed(ctx, incident_id)
     return entry
+
+
+async def post_incident_digest(ctx: Context) -> Digest:
+    """Post one Slack update for every incident that is not resolved yet, as a daily digest.
+
+    It takes about one second per incident, because Slack accepts about one
+    message per second, and it reports progress after each post. If the call
+    is cancelled, the incidents already posted stay posted and recorded in
+    their timelines, and the rest are not posted.
+    """
+    with closing(storage.connect()) as conn:
+        pending = [i for i in reversed(storage.list_incidents(conn)) if i.status is not Status.RESOLVED]
+    posted: list[int] = []
+    for number, incident in enumerate(pending, start=1):
+        if number > 1:
+            await anyio.sleep(SLACK_INTERVAL_SECONDS)
+        message = f"Daily digest: still {incident.status}."
+        # Posting and recording run with no await in between, so a
+        # cancellation can never leave an incident posted but not recorded.
+        with closing(storage.connect()) as conn:
+            _post(incident, message)
+            storage.add_note(conn, incident.id, f"Posted to Slack: {message}")
+        posted.append(incident.id)
+        await notify_timeline_changed(ctx, incident.id)
+        await ctx.report_progress(number, total=len(pending), message=f"Posted #{incident.id}")
+    return Digest(posted=posted, total=len(pending))
 
 
 def draft_status_update(incident_id: IncidentId, message: SlackText) -> StatusUpdateDraft:
@@ -113,6 +142,7 @@ def _live_draft(conn, draft_id: str) -> StatusUpdateDraft:
 def register(mcp: MCPServer) -> None:
     for tool in (
         post_to_slack,
+        post_incident_digest,
         draft_status_update,
         revise_status_update,
         publish_status_update,

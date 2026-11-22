@@ -2,10 +2,13 @@
 
 from types import SimpleNamespace
 
+import anyio
 import pytest
 from mcp import Client
 from mcp.server import MCPServer
+from mcp.server.mcpserver import Context
 
+from flarepost.copilot import agent
 from flarepost.copilot.agent import ask, toolbox
 
 pytestmark = pytest.mark.anyio
@@ -38,6 +41,19 @@ def calls(*blocks):
 
 def answer(value: str):
     return SimpleNamespace(stop_reason="end_turn", content=[text(value)])
+
+
+def slow_server() -> MCPServer:
+    server = MCPServer("Slow")
+
+    @server.tool()
+    async def count(steps: int, ctx: Context) -> str:
+        for step in range(1, steps + 1):
+            await anyio.sleep(0.1)
+            await ctx.report_progress(step, total=steps, message=f"Step {step}")
+        return "done"
+
+    return server
 
 
 async def test_the_model_calls_a_tool_and_gets_the_result(client: Client):
@@ -113,3 +129,25 @@ async def test_an_unknown_tool_goes_back_to_the_model_as_an_error(client: Client
     [result] = llm.requests[1]["messages"][-1]["content"]
     assert result["is_error"] is True
     assert "no tool named jira_list_issues" in result["content"]
+
+
+async def test_the_copilot_shows_progress():
+    llm = FakeLLM(calls(tool_use("call-1", "slow_count", {"steps": 2})), answer("Done."))
+    lines: list[str] = []
+
+    async with Client(slow_server(), raise_exceptions=True) as slow:
+        await ask(await toolbox({"slow": slow}), llm, "Count to two", log=lines.append)
+
+    assert lines[1:] == ["  … Step 1 (1/2)", "  … Step 2 (2/2)"]
+
+
+async def test_a_call_that_takes_too_long_goes_back_to_the_model_as_an_error(monkeypatch):
+    monkeypatch.setattr(agent, "TOOL_TIMEOUT_SECONDS", 0.25)
+    llm = FakeLLM(calls(tool_use("call-1", "slow_count", {"steps": 10})), answer("It took too long."))
+
+    async with Client(slow_server(), raise_exceptions=True) as slow:
+        await ask(await toolbox({"slow": slow}), llm, "Count to ten", log=lambda _: None)
+
+    [result] = llm.requests[1]["messages"][-1]["content"]
+    assert result["is_error"] is True
+    assert "Timed out" in result["content"]
