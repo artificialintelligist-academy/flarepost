@@ -4,12 +4,13 @@ import argparse
 import logging
 import os
 import sys
+from contextlib import AsyncExitStack
 
 import anyio
 from anthropic import AsyncAnthropic
 from mcp import Client, StdioServerParameters
 
-from flarepost.copilot.agent import ask
+from flarepost.copilot.agent import GITHUB_NOTE, SYSTEM, ask, toolbox
 from flarepost.copilot.elicitation import ask_in_terminal
 
 # Over stdio the server only inherits a minimal allow-list of variables,
@@ -17,11 +18,36 @@ from flarepost.copilot.elicitation import ask_in_terminal
 # key is not on the list: only the copilot talks to the LLM.
 PASSTHROUGH_ENV = ("FLAREPOST_DB", "FLAREPOST_SLACK_WEBHOOK_URL")
 
+GITHUB_TOKEN_ENV = "GITHUB_PERSONAL_ACCESS_TOKEN"
+GITHUB_OWNER = os.environ.get("FLAREPOST_GITHUB_OWNER", "artificialintelligist-academy")
+# A fixed version, so a new release cannot rename the tools the course relies on.
+GITHUB_IMAGE = "ghcr.io/github/github-mcp-server:v2.2.0"
+
 
 def server_parameters() -> StdioServerParameters:
     """Launch Flarepost with the same Python, passing on the variables it needs."""
     env = {name: os.environ[name] for name in PASSTHROUGH_ENV if name in os.environ}
     return StdioServerParameters(command=sys.executable, args=["-m", "flarepost"], env=env)
+
+
+def github_parameters() -> StdioServerParameters | None:
+    """Run GitHub's official MCP server in Docker, read-only and limited to repos and pull requests."""
+    token = os.environ.get(GITHUB_TOKEN_ENV)
+    if not token:
+        return None
+    return StdioServerParameters(
+        command="docker",
+        args=[
+            "run", "-i", "--rm",
+            "-e", GITHUB_TOKEN_ENV,
+            "-e", "GITHUB_READ_ONLY=1",
+            "-e", "GITHUB_TOOLSETS=repos,pull_requests",
+            GITHUB_IMAGE,
+            # Its logs go to a file inside the container, which --rm throws away.
+            "stdio", "--log-file=/tmp/github-mcp-server.log",
+        ],
+        env={GITHUB_TOKEN_ENV: token},
+    )
 
 
 async def describe(client: Client) -> str:
@@ -52,11 +78,23 @@ async def describe(client: Client) -> str:
 
 
 async def run(question: str | None) -> None:
-    async with Client(server_parameters(), elicitation_callback=ask_in_terminal) as client:
+    async with AsyncExitStack() as stack:
+        flarepost = await stack.enter_async_context(
+            Client(server_parameters(), elicitation_callback=ask_in_terminal)
+        )
         if question is None:
-            print(await describe(client))
+            print(await describe(flarepost))
+            return
+
+        clients = {"flarepost": flarepost}
+        system = SYSTEM
+        github = github_parameters()
+        if github is None:
+            print(f"(GitHub is not connected: set {GITHUB_TOKEN_ENV} in .env to use it.)")
         else:
-            print(await ask(client, AsyncAnthropic(), question))
+            clients["github"] = await stack.enter_async_context(Client(github))
+            system += "\n\n" + GITHUB_NOTE.format(owner=GITHUB_OWNER)
+        print(await ask(await toolbox(clients), AsyncAnthropic(), question, system=system))
 
 
 def main() -> None:
