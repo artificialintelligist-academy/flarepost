@@ -10,6 +10,9 @@ from mcp.types import TextContent
 MODEL = os.environ.get("FLAREPOST_MODEL", "claude-haiku-5-5")
 MAX_TOKENS = 4096
 MAX_TURNS = 10
+# The longest a tool call may run. When it is reached the SDK cancels the call
+# on the server too, and the model gets the timeout as an error.
+TOOL_TIMEOUT_SECONDS = float(os.environ.get("FLAREPOST_TOOL_TIMEOUT", "60"))
 
 SYSTEM = """\
 You are the Flarepost on-call copilot. Tools named flarepost_* look up and
@@ -80,18 +83,28 @@ async def ask(
         for block in response.content:
             if block.type == "tool_use":
                 log(f"→ {block.name} {block.input}")
-                results.append(await _run_tool(box, block))
+                results.append(await _run_tool(box, block, log))
         messages.append({"role": "user", "content": results})
 
     raise RuntimeError(f"No answer after {MAX_TURNS} turns.")
 
 
-async def _run_tool(box: Toolbox, block) -> dict:
+async def _run_tool(box: Toolbox, block, log: Callable[[str], None]) -> dict:
     if block.name not in box.routes:
         return _error(block, f"There is no tool named {block.name}.")
     client, tool_name = box.routes[block.name]
+
+    async def show_progress(progress: float, total: float | None, message: str | None) -> None:
+        done = f"{progress:g}/{total:g}" if total else f"{progress:g}"
+        log(f"  … {message or 'working'} ({done})")
+
     try:
-        result = await client.call_tool(tool_name, block.input)
+        result = await client.call_tool(
+            tool_name,
+            block.input,
+            read_timeout_seconds=TOOL_TIMEOUT_SECONDS,
+            progress_callback=show_progress,
+        )
     except MCPError as error:
         return _error(block, str(error))
     text = "\n".join(part.text for part in result.content if isinstance(part, TextContent))

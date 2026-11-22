@@ -74,3 +74,9 @@ class StatusUpdateDraft:
     incident_id: int
     message: str
     expires_at: datetime
+
+
+@dataclass(frozen=True)
+class Digest:
+    posted: list[int]
+    total: int
