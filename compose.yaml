@@ -1,0 +1,35 @@
+# Flarepost and Redis, as we ran them in video 40, described in one file.
+name: flarepost
+
+services:
+  redis:
+    image: redis:8.10.3-alpine
+    # Ready means answering commands, not just a running container.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+  flarepost:
+    build: .
+    image: flarepost:dev
+    # Two instances, like the two containers of video 40.
+    deploy:
+      replicas: 2
+    # Only on this machine, one port per instance.
+    ports:
+      - "127.0.0.1:8000-8001:8000"
+    # Secrets arrive at run time from .env; environment wins over env_file.
+    env_file: .env
+    environment:
+      FLAREPOST_REDIS_URL: redis://redis:6379/0
+    volumes:
+      - data:/data
+    # Wait until Redis answers, or the lifespan fails as in video 40.
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  data:
