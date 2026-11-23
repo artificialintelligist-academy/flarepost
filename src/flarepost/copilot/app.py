@@ -111,4 +111,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="The Flarepost on-call copilot.")
     parser.add_argument("question", nargs="?", help="a question for the copilot; omit it for a report")
     args = parser.parse_args()
-    anyio.run(run, args.question)
+    try:
+        anyio.run(run, args.question)
+    except KeyboardInterrupt:
+        # Ctrl+C is how a user stops the copilot, not an error.
+        print("\nStopped.")
