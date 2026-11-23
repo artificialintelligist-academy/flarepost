@@ -17,6 +17,8 @@ from flarepost.copilot.elicitation import ask_in_terminal
 # so anything Flarepost needs has to be passed on explicitly. The Anthropic
 # key is not on the list: only the copilot talks to the LLM.
 PASSTHROUGH_ENV = ("FLAREPOST_DB", "FLAREPOST_SLACK_WEBHOOK_URL")
+# Set it to a running server's endpoint, e.g. http://127.0.0.1:8000/mcp.
+FLAREPOST_URL_ENV = "FLAREPOST_URL"
 
 GITHUB_TOKEN_ENV = "GITHUB_PERSONAL_ACCESS_TOKEN"
 GITHUB_OWNER = os.environ.get("FLAREPOST_GITHUB_OWNER", "artificialintelligist-academy")
@@ -28,6 +30,11 @@ def server_parameters() -> StdioServerParameters:
     """Launch Flarepost with the same Python, passing on the variables it needs."""
     env = {name: os.environ[name] for name in PASSTHROUGH_ENV if name in os.environ}
     return StdioServerParameters(command=sys.executable, args=["-m", "flarepost"], env=env)
+
+
+def flarepost_server() -> str | StdioServerParameters:
+    """Use a running Flarepost over Streamable HTTP if FLAREPOST_URL is set, else start one over stdio."""
+    return os.environ.get(FLAREPOST_URL_ENV) or server_parameters()
 
 
 def github_parameters() -> StdioServerParameters | None:
@@ -80,7 +87,7 @@ async def describe(client: Client) -> str:
 async def run(question: str | None) -> None:
     async with AsyncExitStack() as stack:
         flarepost = await stack.enter_async_context(
-            Client(server_parameters(), elicitation_callback=ask_in_terminal)
+            Client(flarepost_server(), elicitation_callback=ask_in_terminal)
         )
         if question is None:
             print(await describe(flarepost))
