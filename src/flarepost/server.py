@@ -1,5 +1,8 @@
 """Flarepost MCP server: creates the server and plugs in every tool, resource and prompt."""
 
+import argparse
+
+import uvicorn
 from mcp.server import CacheHint, MCPServer
 
 from flarepost import completions
@@ -32,8 +35,17 @@ completions.register(mcp)
 
 
 def main() -> None:
-    """Start the server over stdio."""
-    mcp.run()
+    """Start the server over stdio, or over Streamable HTTP with --http."""
+    parser = argparse.ArgumentParser(description="The Flarepost MCP server.")
+    parser.add_argument("--http", action="store_true", help="serve Streamable HTTP instead of stdio")
+    parser.add_argument("--port", type=int, default=8000, help="port for --http (default: 8000)")
+    args = parser.parse_args()
+    if args.http:
+        # Only on this machine for now. The app accepts only localhost Host and
+        # Origin headers by default, which protects it from DNS rebinding.
+        uvicorn.run(mcp.streamable_http_app(), host="127.0.0.1", port=args.port)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

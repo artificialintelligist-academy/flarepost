@@ -1,13 +1,15 @@
-"""Game Day: replay the same checkout outage and time how it is handled."""
+"""Game Day: replay the same checkout outage on a running Flarepost and time how it is handled."""
 
 import argparse
+import logging
+import os
 import time
-from contextlib import closing
 from datetime import datetime
 
-from flarepost import storage
-from flarepost.domain import EntryKind, Incident, Severity, Status, TimelineEntry
+import anyio
+from mcp import Client
 
+DEFAULT_URL = "http://127.0.0.1:8000/mcp"
 TITLE = "Checkout latency rising"
 SERVICE = "checkout-api"
 DESCRIPTION = "Raised automatically by the checkout latency alert."
@@ -18,76 +20,108 @@ SIGNALS = [
     "[monitor] Error rate at 35%. Most card payments are failing.",
 ]
 WORLD_PREFIXES = ("[monitor]", "[deploy-bot]")
-DONE = {Status.MITIGATED, Status.RESOLVED}
+DONE = {"mitigated", "resolved"}
 POLL_SECONDS = 2
 TIMEOUT_SECONDS = 30 * 60
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Replay a scripted checkout outage.")
+    # The MCP client talks HTTP through the httpx2 logger, which logs every
+    # request at INFO. One poll every two seconds would bury the timeline.
+    logging.getLogger("httpx2").setLevel(logging.WARNING)
+    parser = argparse.ArgumentParser(description="Replay a scripted checkout outage on a running Flarepost.")
     parser.add_argument(
         "--interval", type=float, default=30, help="seconds between signals (default: 30)"
     )
+    parser.add_argument(
+        "--url",
+        default=os.environ.get("FLAREPOST_URL", DEFAULT_URL),
+        help="the Flarepost MCP endpoint (default: %(default)s)",
+    )
     args = parser.parse_args()
-
-    with closing(storage.connect()) as conn:
-        incident = storage.create_incident(conn, TITLE, SERVICE, Severity.SEV3, DESCRIPTION)
-    print(f"Game Day started. Incident #{incident.id}: {TITLE} ({SERVICE})")
-    print("Handle it until it is mitigated. Press Ctrl+C to give up.\n")
-
-    _run(incident.id, args.interval)
-    _print_scoreboard(incident.id)
+    try:
+        anyio.run(_play, args.url, args.interval)
+    except KeyboardInterrupt:
+        # Ctrl+C is how a player gives up, not an error.
+        print("\nGame Day stopped.")
 
 
-def _run(incident_id: int, interval: float) -> None:
+async def _play(url: str, interval: float) -> None:
+    # Every change goes through the server's tools, so clients subscribed to
+    # this incident are notified, just as if a person had made it.
+    async with Client(url) as client:
+        incident = await _call(
+            client,
+            "create_incident",
+            {"title": TITLE, "service": SERVICE, "severity": "sev3", "description": DESCRIPTION},
+        )
+        print(f"Game Day started. Incident #{incident['id']}: {TITLE} ({SERVICE})")
+        print("Handle it until it is mitigated. Press Ctrl+C to give up.\n")
+
+        await _run(client, incident["id"], interval)
+
+        print(f"\nGame Day scoreboard for incident #{incident['id']}")
+        for label, value in (await scoreboard(client, incident["id"])).items():
+            print(f"  {label:<24} {value}")
+
+
+async def _run(client: Client, incident_id: int, interval: float) -> None:
     pending = list(SIGNALS)
     seen: set[int] = set()
     started = time.monotonic()
     next_signal = started + interval
     while time.monotonic() - started < TIMEOUT_SECONDS:
-        with closing(storage.connect()) as conn:
-            if pending and time.monotonic() >= next_signal:
-                storage.add_note(conn, incident_id, pending.pop(0))
-                next_signal += interval
-            incident = storage.get_incident(conn, incident_id)
-            for entry in storage.get_timeline(conn, incident_id):
-                if entry.id not in seen:
-                    seen.add(entry.id)
-                    _show(incident, entry)
-            if incident.status in DONE:
-                return
-        time.sleep(POLL_SECONDS)
+        if pending and time.monotonic() >= next_signal:
+            await _call(client, "add_note", {"incident_id": incident_id, "message": pending.pop(0)})
+            next_signal += interval
+        incident = await _call(client, "get_incident", {"incident_id": incident_id})
+        for entry in await _timeline(client, incident_id):
+            if entry["id"] not in seen:
+                seen.add(entry["id"])
+                _show(incident, entry)
+        if incident["status"] in DONE:
+            return
+        await anyio.sleep(POLL_SECONDS)
     print("\nTime is up, the incident was not mitigated.")
 
 
-def _show(incident: Incident, entry: TimelineEntry) -> None:
-    from_world = entry.kind is EntryKind.CREATED or entry.message.startswith(WORLD_PREFIXES)
-    who = "" if from_world else "[team] "
-    print(f"  {_elapsed(incident.created_at, entry.created_at)}  {who}{entry.message}")
-
-
-def _print_scoreboard(incident_id: int) -> None:
-    with closing(storage.connect()) as conn:
-        incident = storage.get_incident(conn, incident_id)
-        timeline = storage.get_timeline(conn, incident_id)
+async def scoreboard(client: Client, incident_id: int) -> dict[str, str]:
+    """How long the team took to reach each milestone, or 'missed'."""
+    incident = await _call(client, "get_incident", {"incident_id": incident_id})
+    timeline = await _timeline(client, incident_id)
 
     def first(matches) -> str:
         for entry in timeline:
-            if matches(entry):
-                return _elapsed(incident.created_at, entry.created_at)
+            if matches(entry["message"]):
+                return _elapsed(incident["created_at"], entry["created_at"])
         return "missed"
 
-    rows = {
-        "Started investigating": first(lambda e: e.message.endswith("to investigating")),
-        "Escalated to sev1": first(lambda e: e.message.endswith("to sev1")),
-        "Told the team on Slack": first(lambda e: e.message.startswith("Posted to Slack:")),
-        "Mitigated": first(lambda e: e.message.endswith(("to mitigated", "to resolved"))),
+    return {
+        "Started investigating": first(lambda m: m.endswith("to investigating")),
+        "Escalated to sev1": first(lambda m: m.endswith("to sev1")),
+        "Told the team on Slack": first(lambda m: m.startswith("Posted to Slack:")),
+        "Mitigated": first(lambda m: m.endswith(("to mitigated", "to resolved"))),
     }
-    print(f"\nGame Day scoreboard for incident #{incident_id}")
-    for label, value in rows.items():
-        print(f"  {label:<24} {value}")
 
 
-def _elapsed(start: datetime, end: datetime) -> str:
-    minutes, seconds = divmod(int((end - start).total_seconds()), 60)
+async def _call(client: Client, name: str, arguments: dict) -> dict:
+    result = await client.call_tool(name, arguments)
+    if result.is_error:
+        raise SystemExit(f"{name} failed: {result.content[0].text}")
+    return result.structured_content
+
+
+async def _timeline(client: Client, incident_id: int) -> list[dict]:
+    return (await _call(client, "get_timeline", {"incident_id": incident_id}))["result"]
+
+
+def _show(incident: dict, entry: dict) -> None:
+    from_world = entry["kind"] == "created" or entry["message"].startswith(WORLD_PREFIXES)
+    who = "" if from_world else "[team] "
+    print(f"  {_elapsed(incident['created_at'], entry['created_at'])}  {who}{entry['message']}")
+
+
+def _elapsed(start: str, end: str) -> str:
+    seconds = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+    minutes, seconds = divmod(int(seconds), 60)
     return f"{minutes:02d}:{seconds:02d}"
