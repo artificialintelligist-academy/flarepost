@@ -90,17 +90,19 @@ def main() -> None:
     """Start the server over stdio, or over Streamable HTTP with --http."""
     parser = argparse.ArgumentParser(description="The Flarepost MCP server.")
     parser.add_argument("--http", action="store_true", help="serve Streamable HTTP instead of stdio")
+    parser.add_argument("--host", default="127.0.0.1", help="address for --http to listen on (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="port for --http (default: 8000)")
     parser.add_argument("--workers", type=int, default=1, help="processes for --http (default: 1)")
     args = parser.parse_args()
     if args.http:
-        # Only on this machine for now. The app accepts only localhost Host and
-        # Origin headers by default, which protects it from DNS rebinding.
+        # --host only changes where uvicorn listens; in a container it must be
+        # 0.0.0.0 so Docker can forward the port. The app still accepts only
+        # localhost Host and Origin headers, which protects it from DNS rebinding.
         # uvicorn needs the app's import path, not the app, to start workers.
         uvicorn.run(
             "flarepost.server:http_app",
             factory=True,
-            host="127.0.0.1",
+            host=args.host,
             port=args.port,
             workers=args.workers,
         )
