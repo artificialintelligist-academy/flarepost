@@ -1,9 +1,9 @@
-"""The copilot's report, and how it reaches Flarepost: over stdio or over Streamable HTTP."""
+"""The copilot's report, how it reaches Flarepost, and the runbooks it attaches."""
 
 import pytest
 from mcp import Client, StdioServerParameters
 
-from flarepost.copilot.app import describe, flarepost_server
+from flarepost.copilot.app import describe, flarepost_server, runbook_attacher
 
 
 async def test_describe_shows_capabilities_and_open_incidents(client: Client):
@@ -36,6 +36,34 @@ def test_with_a_url_the_copilot_uses_the_running_server(monkeypatch):
     assert flarepost_server() == "http://127.0.0.1:8000/mcp"
 
 
+async def test_the_copilot_attaches_a_runbook_once(client: Client):
+    attach = runbook_attacher(client)
+    incident = {"service": "payments-api"}
+
+    [runbook] = await attach("flarepost_get_incident", incident)
+
+    assert "flarepost://runbooks/payments-api" in runbook
+    assert "Check the card provider's status page" in runbook
+    assert await attach("flarepost_get_incident", incident) == []
+
+
+async def test_a_service_without_a_runbook_gets_nothing(client: Client):
+    attach = runbook_attacher(client)
+
+    assert await attach("flarepost_get_incident", {"service": "reporting"}) == []
+
+
+async def test_other_tools_attach_nothing(client: Client):
+    attach = runbook_attacher(client)
+
+    assert await attach("flarepost_list_incidents", {"service": "payments-api"}) == []
+
+
 test_describe_shows_capabilities_and_open_incidents = pytest.mark.anyio(
     test_describe_shows_capabilities_and_open_incidents
 )
+test_the_copilot_attaches_a_runbook_once = pytest.mark.anyio(test_the_copilot_attaches_a_runbook_once)
+test_a_service_without_a_runbook_gets_nothing = pytest.mark.anyio(
+    test_a_service_without_a_runbook_gets_nothing
+)
+test_other_tools_attach_nothing = pytest.mark.anyio(test_other_tools_attach_nothing)
