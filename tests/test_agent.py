@@ -151,3 +151,24 @@ async def test_a_call_that_takes_too_long_goes_back_to_the_model_as_an_error(mon
     [result] = llm.requests[1]["messages"][-1]["content"]
     assert result["is_error"] is True
     assert "Timed out" in result["content"]
+
+
+async def test_the_application_can_attach_context_after_a_tool_call(client: Client):
+    await client.call_tool(
+        "create_incident",
+        {"title": "Card payments failing", "service": "payments-api", "severity": "sev2"},
+    )
+
+    async def attach(tool_name: str, structured: dict) -> list[str]:
+        return [f"Runbook for {structured['service']}"]
+
+    llm = FakeLLM(
+        calls(tool_use("call-1", "flarepost_get_incident", {"incident_id": 1})),
+        answer("Follow the runbook."),
+    )
+
+    await ask(await toolbox({"flarepost": client}), llm, "Handle incident 1", log=lambda _: None, attach=attach)
+
+    result, note = llm.requests[1]["messages"][-1]["content"]
+    assert result["type"] == "tool_result"
+    assert note == {"type": "text", "text": "Runbook for payments-api"}

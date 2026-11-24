@@ -8,9 +8,10 @@ from contextlib import AsyncExitStack
 
 import anyio
 from anthropic import AsyncAnthropic
-from mcp import Client, StdioServerParameters
+from mcp import Client, MCPError, StdioServerParameters
+from mcp.types import TextResourceContents
 
-from flarepost.copilot.agent import GITHUB_NOTE, SYSTEM, ask, toolbox
+from flarepost.copilot.agent import GITHUB_NOTE, SYSTEM, Attach, ask, toolbox
 from flarepost.copilot.elicitation import ask_in_terminal
 
 # Over stdio the server only inherits a minimal allow-list of variables,
@@ -24,6 +25,8 @@ GITHUB_TOKEN_ENV = "GITHUB_PERSONAL_ACCESS_TOKEN"
 GITHUB_OWNER = os.environ.get("FLAREPOST_GITHUB_OWNER", "artificialintelligist-academy")
 # A fixed version, so a new release cannot rename the tools the course relies on.
 GITHUB_IMAGE = "ghcr.io/github/github-mcp-server:v2.2.0"
+
+RUNBOOK_URI = "flarepost://runbooks/{service}"
 
 
 def server_parameters() -> StdioServerParameters:
@@ -84,6 +87,33 @@ async def describe(client: Client) -> str:
     return "\n".join(lines)
 
 
+def runbook_attacher(flarepost: Client) -> Attach:
+    """Attach the runbook of each incident the model looks up, as a user attaches it in Claude Desktop.
+
+    Resources are controlled by the application: here the copilot decides what
+    the model reads, once per runbook. Services without a runbook get nothing.
+    """
+    attached: set[str] = set()
+
+    async def attach(tool_name: str, structured: dict) -> list[str]:
+        if tool_name != "flarepost_get_incident":
+            return []
+        uri = RUNBOOK_URI.format(service=structured["service"])
+        if uri in attached:
+            return []
+        attached.add(uri)
+        try:
+            result = await flarepost.read_resource(uri)
+        except MCPError:
+            return []
+        text = "\n".join(
+            content.text for content in result.contents if isinstance(content, TextResourceContents)
+        )
+        return [f"Runbook for {structured['service']}, attached by the copilot from {uri}:\n\n{text}"]
+
+    return attach
+
+
 async def run(question: str | None) -> None:
     async with AsyncExitStack() as stack:
         flarepost = await stack.enter_async_context(
@@ -101,7 +131,8 @@ async def run(question: str | None) -> None:
         else:
             clients["github"] = await stack.enter_async_context(Client(github))
             system += "\n\n" + GITHUB_NOTE.format(owner=GITHUB_OWNER)
-        print(await ask(await toolbox(clients), AsyncAnthropic(), question, system=system))
+        box = await toolbox(clients)
+        print(await ask(box, AsyncAnthropic(), question, system=system, attach=runbook_attacher(flarepost)))
 
 
 def main() -> None:
