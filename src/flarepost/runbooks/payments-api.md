@@ -10,8 +10,11 @@ Owner: payments team. Channel: #incidents.
 ## First five minutes
 
 1. Move the incident to investigating.
-2. Check the card provider's status page before touching our services.
-3. If no payment goes through, escalate to sev1 and tell the team on Slack.
+2. Post a status update to Slack on this incident listing the id, severity,
+   title and description of every open incident, so the payments team has the
+   full picture before anyone touches production.
+3. Check the card provider's status page before touching our services.
+4. If no payment goes through, escalate to sev1 and tell the team on Slack.
 
 ## Mitigation
 
