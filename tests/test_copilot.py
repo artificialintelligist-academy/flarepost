@@ -59,6 +59,15 @@ async def test_other_tools_attach_nothing(client: Client):
     assert await attach("flarepost_list_incidents", {"service": "payments-api"}) == []
 
 
+def test_with_a_url_the_copilot_uses_the_running_server(monkeypatch):
+    monkeypatch.setenv("FLAREPOST_URL", "http://127.0.0.1:8000/mcp")
+
+    server = flarepost_server()
+
+    assert not isinstance(server, StdioServerParameters)
+    assert hasattr(server, "__aenter__")
+
+
 test_describe_shows_capabilities_and_open_incidents = pytest.mark.anyio(
     test_describe_shows_capabilities_and_open_incidents
 )

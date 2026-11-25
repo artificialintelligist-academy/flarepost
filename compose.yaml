@@ -25,6 +25,7 @@ services:
     environment:
       FLAREPOST_SLACK_WEBHOOK_URL: ${FLAREPOST_SLACK_WEBHOOK_URL}
       FLAREPOST_REQUEST_STATE_KEY: ${FLAREPOST_REQUEST_STATE_KEY}
+      FLAREPOST_TOKEN: ${FLAREPOST_TOKEN}
       FLAREPOST_REDIS_URL: redis://redis:6379/0
     volumes:
       - data:/data
