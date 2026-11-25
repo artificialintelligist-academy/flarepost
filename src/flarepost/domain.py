@@ -80,6 +80,7 @@ class StatusUpdateDraft:
 class Digest:
     posted: list[int]
     total: int
+    reason: str | None = None
 
 
 @dataclass(frozen=True)

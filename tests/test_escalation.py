@@ -1,4 +1,4 @@
-"""Escalating to sev1 needs the user's confirmation: through MRTR, or in the conversation."""
+"""Escalating to sev1 needs the user's confirmation in a dialog; without one nothing changes."""
 
 import pytest
 from mcp import Client
@@ -10,7 +10,6 @@ pytestmark = pytest.mark.anyio
 
 AUTH = {"title": "Login slow for some users", "service": "auth-service", "severity": "sev3"}
 CONFIRMED_BY_USER = "Escalation to sev1 confirmed by the user"
-CONFIRMED_IN_CONVERSATION = "Escalation to sev1 confirmed in conversation"
 
 
 async def create(client: Client) -> int:
@@ -87,29 +86,21 @@ async def test_a_refusal_changes_nothing_and_is_not_an_error(action: str, confir
     assert (incident["severity"], incident["status"]) == ("sev3", "open")
 
 
-async def test_the_flag_does_not_skip_the_question():
-    user = User("decline")
-    async with with_user(user) as client:
-        incident_id = await create(client)
-        result = await escalate(client, incident_id, confirm_sev1=True)
-
-    assert len(user.asked) == 1
-    assert result.structured_content["updated"] is False
-
-
-async def test_without_elicitation_the_model_must_ask_first(client: Client):
+async def test_without_elicitation_nothing_is_escalated(client: Client):
     incident_id = await create(client)
 
-    result = await escalate(client, incident_id)
+    result = await escalate(client, incident_id, status="investigating")
+    incident = (await client.call_tool("get_incident", {"incident_id": incident_id})).structured_content
 
     assert result.is_error
-    assert "confirm_sev1 set to true" in result.content[0].text
+    assert "cannot show one" in result.content[0].text
+    assert (incident["severity"], incident["status"]) == ("sev3", "open")
 
 
-async def test_without_elicitation_the_flag_escalates_and_is_audited(client: Client):
+async def test_without_elicitation_changes_below_sev1_still_work(client: Client):
     incident_id = await create(client)
 
-    result = await escalate(client, incident_id, confirm_sev1=True)
+    result = await client.call_tool("update_incident", {"incident_id": incident_id, "severity": "sev2"})
 
-    assert result.structured_content["incident"]["severity"] == "sev1"
-    assert (await timeline(client, incident_id))[-1] == CONFIRMED_IN_CONVERSATION
+    assert result.structured_content["updated"] is True
+    assert result.structured_content["incident"]["severity"] == "sev2"

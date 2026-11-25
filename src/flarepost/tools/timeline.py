@@ -10,6 +10,7 @@ from flarepost.domain import TimelineEntry
 from flarepost.errors import incident_not_found
 from flarepost.resources.incidents import notify_timeline_changed
 from flarepost.schemas import IncidentId, NoteText
+from flarepost.tools.incidents import ADDS, READS
 
 
 async def add_note(incident_id: IncidentId, message: NoteText, ctx: Context) -> TimelineEntry:
@@ -31,5 +32,5 @@ def get_timeline(incident_id: IncidentId) -> list[TimelineEntry]:
 
 
 def register(mcp: MCPServer) -> None:
-    for tool in (add_note, get_timeline):
-        mcp.tool()(tool)
+    mcp.tool(annotations=ADDS)(add_note)
+    mcp.tool(annotations=READS)(get_timeline)

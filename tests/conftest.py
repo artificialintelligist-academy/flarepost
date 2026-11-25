@@ -25,8 +25,10 @@ async def client():
 
 
 async def say_yes(context, params):
-    """A user who confirms every question, for tests about what happens after they agree."""
-    return ElicitResult(action="accept", content={"confirm": True})
+    """A user who agrees to every question: confirms, and keeps any text written in for them."""
+    fields = params.requested_schema["properties"]
+    content = {name: field.get("default", True) for name, field in fields.items()}
+    return ElicitResult(action="accept", content=content)
 
 
 @pytest.fixture
