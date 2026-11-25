@@ -4,7 +4,7 @@ import argparse
 import logging
 import os
 import sys
-from contextlib import AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 
 import anyio
 from anthropic import AsyncAnthropic
@@ -13,6 +13,7 @@ from mcp.types import TextResourceContents
 
 from flarepost.copilot.agent import GITHUB_NOTE, SYSTEM, Attach, ask, toolbox
 from flarepost.copilot.elicitation import ask_in_terminal
+from flarepost.remote import remote
 
 # Over stdio the server only inherits a minimal allow-list of variables,
 # so anything Flarepost needs has to be passed on explicitly. The Anthropic
@@ -35,9 +36,13 @@ def server_parameters() -> StdioServerParameters:
     return StdioServerParameters(command=sys.executable, args=["-m", "flarepost"], env=env)
 
 
-def flarepost_server() -> str | StdioServerParameters:
-    """Use a running Flarepost over Streamable HTTP if FLAREPOST_URL is set, else start one over stdio."""
-    return os.environ.get(FLAREPOST_URL_ENV) or server_parameters()
+def flarepost_server() -> AbstractAsyncContextManager | StdioServerParameters:
+    """Use a running Flarepost over Streamable HTTP if FLAREPOST_URL is set, else start one over stdio.
+
+    Over HTTP the connection sends FLAREPOST_TOKEN, if it is set.
+    """
+    url = os.environ.get(FLAREPOST_URL_ENV)
+    return remote(url) if url else server_parameters()
 
 
 def github_parameters() -> StdioServerParameters | None:

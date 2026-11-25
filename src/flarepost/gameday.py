@@ -9,6 +9,8 @@ from datetime import datetime
 import anyio
 from mcp import Client
 
+from flarepost.remote import remote
+
 DEFAULT_URL = "http://127.0.0.1:8000/mcp"
 TITLE = "Checkout latency rising"
 SERVICE = "checkout-api"
@@ -49,7 +51,7 @@ def main() -> None:
 async def _play(url: str, interval: float) -> None:
     # Every change goes through the server's tools, so clients subscribed to
     # this incident are notified, just as if a person had made it.
-    async with Client(url) as client:
+    async with Client(remote(url)) as client:
         incident = await _call(
             client,
             "create_incident",

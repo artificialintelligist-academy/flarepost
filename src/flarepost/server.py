@@ -1,6 +1,7 @@
 """Flarepost MCP server: creates the server and plugs in every tool, resource and prompt."""
 
 import argparse
+import hmac
 import os
 from contextlib import asynccontextmanager
 
@@ -19,6 +20,8 @@ from flarepost.tools import notify, timeline
 
 REQUEST_STATE_KEY_ENV = "FLAREPOST_REQUEST_STATE_KEY"
 REDIS_URL_ENV = "FLAREPOST_REDIS_URL"
+TOKEN_ENV = "FLAREPOST_TOKEN"
+UNAUTHORIZED = b'{"error": "This server needs an Authorization: Bearer <token> header."}'
 
 
 def request_state_security() -> RequestStateSecurity | None:
@@ -81,9 +84,41 @@ postmortem.register(mcp)
 completions.register(mcp)
 
 
+class RequireToken:
+    """Refuse every HTTP request without the shared token, before MCP sees it.
+
+    Over stdio only the process that started the server can talk to it. Over
+    HTTP any process on the machine can, so a local server needs a token.
+    """
+
+    def __init__(self, app, token: str):
+        self.app = app
+        self.expected = f"Bearer {token}".encode()
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            given = dict(scope["headers"]).get(b"authorization", b"")
+            # compare_digest takes the same time whatever part of the token is
+            # wrong, so timing the answers reveals nothing about it.
+            if not hmac.compare_digest(given, self.expected):
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"application/json"), (b"www-authenticate", b"Bearer")],
+                })
+                await send({"type": "http.response.body", "body": UNAUTHORIZED})
+                return
+        await self.app(scope, receive, send)
+
+
 def http_app():
-    """The Streamable HTTP app. With several workers, uvicorn builds one in each process."""
-    return mcp.streamable_http_app()
+    """The Streamable HTTP app. With several workers, uvicorn builds one in each process.
+
+    With FLAREPOST_TOKEN set, every request must carry it; without it, the app is open.
+    """
+    app = mcp.streamable_http_app()
+    token = os.environ.get(TOKEN_ENV)
+    return RequireToken(app, token) if token else app
 
 
 def main() -> None:
