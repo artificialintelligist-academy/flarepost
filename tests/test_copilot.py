@@ -33,7 +33,10 @@ def test_without_a_url_the_copilot_starts_flarepost_over_stdio(monkeypatch):
 def test_with_a_url_the_copilot_uses_the_running_server(monkeypatch):
     monkeypatch.setenv("FLAREPOST_URL", "http://127.0.0.1:8000/mcp")
 
-    assert flarepost_server() == "http://127.0.0.1:8000/mcp"
+    server = flarepost_server()
+
+    assert not isinstance(server, StdioServerParameters)
+    assert hasattr(server, "__aenter__")
 
 
 async def test_the_copilot_attaches_a_runbook_once(client: Client):
@@ -57,15 +60,6 @@ async def test_other_tools_attach_nothing(client: Client):
     attach = runbook_attacher(client)
 
     assert await attach("flarepost_list_incidents", {"service": "payments-api"}) == []
-
-
-def test_with_a_url_the_copilot_uses_the_running_server(monkeypatch):
-    monkeypatch.setenv("FLAREPOST_URL", "http://127.0.0.1:8000/mcp")
-
-    server = flarepost_server()
-
-    assert not isinstance(server, StdioServerParameters)
-    assert hasattr(server, "__aenter__")
 
 
 test_describe_shows_capabilities_and_open_incidents = pytest.mark.anyio(
