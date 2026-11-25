@@ -104,7 +104,8 @@ async def test_resolved_incident_cannot_change(client: Client):
     assert "already resolved" in text_of(result)
 
 
-async def test_post_to_slack_sends_and_records_a_note(client: Client, monkeypatch):
+async def test_post_to_slack_sends_and_records_a_note(confirming_client: Client, monkeypatch):
+    client = confirming_client
     sent: list[str] = []
     monkeypatch.setattr(slack, "post_message", sent.append)
     incident = await create(client)
@@ -112,12 +113,13 @@ async def test_post_to_slack_sends_and_records_a_note(client: Client, monkeypatc
     result = await client.call_tool(
         "post_to_slack", {"incident_id": incident["id"], "message": "Rolling back the deploy."}
     )
-    assert not result.is_error
+    assert result.structured_content["posted"] is True
     assert sent[0].startswith("*[SEV1]")
-    assert result.structured_content["message"] == "Posted to Slack: Rolling back the deploy."
+    assert result.structured_content["entry"]["message"] == "Posted to Slack: Rolling back the deploy."
 
 
-async def test_post_to_slack_without_config_records_nothing(client: Client):
+async def test_post_to_slack_without_config_records_nothing(confirming_client: Client):
+    client = confirming_client
     incident = await create(client)
 
     result = await client.call_tool(
