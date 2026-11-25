@@ -8,8 +8,8 @@ from typing import Annotated
 from mcp.server import MCPServer
 from mcp.server.mcpserver import AcceptedElicitation, CancelledElicitation, Context, Elicit, ElicitationResult, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
-from mcp.types import ClientCapabilities, ElicitationCapability
-from pydantic import BaseModel, Field
+from mcp.types import ClientCapabilities, ElicitationCapability, ToolAnnotations
+from pydantic import BaseModel, Field, create_model
 
 from flarepost import storage
 from flarepost.domain import Incident, IncidentPage, ResolvedIncident, Severity, Status, UpdatedIncident
@@ -24,10 +24,21 @@ NO_ANSWER = (
     "The user was asked directly, in a dialog you do not see, and closed it without "
     "answering. Nothing was changed. Ask them in the conversation before trying again."
 )
+ESCALATION_NOTE = "Escalation to sev1 confirmed by the user"
+
+# Hints for the host, which may use them to decide when to ask the user. A host must
+# not trust them, so the real protection stays in the tools that ask the user themselves.
+READS = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+ADDS = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False
+)
+CHANGES = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False
+)
 
 
 class Resolution(BaseModel):
-    """What the user is asked for when the model resolves without a summary."""
+    """What the user confirms, or corrects, before an incident is resolved."""
 
     summary: ResolutionSummary
 
@@ -103,27 +114,18 @@ def list_incidents(
 
 
 async def ask_to_escalate(
-    incident_id: int,
-    ctx: Context,
-    severity: Severity | None = None,
-    confirm_sev1: bool = False,
+    incident_id: int, ctx: Context, severity: Severity | None = None
 ) -> Escalation | Elicit[Escalation]:
     """Resolver for update_incident. With MRTR it runs again on the retry, so it only reads."""
     with closing(storage.connect()) as conn:
         current = _check_not_resolved(conn, incident_id)
-    if severity != Severity.SEV1 or current.severity == Severity.SEV1:
+    if not _is_escalation(current, severity):
         return Escalation(confirm=True)  # not an escalation to sev1, nothing to confirm
-    if ctx.session.check_client_capability(ELICITATION):
-        return Elicit(
-            f'Escalate incident #{incident_id} "{current.title}" from {current.severity} '
-            "to sev1? Sev1 means a full outage.",
-            Escalation,
-        )
-    if confirm_sev1:
-        return Escalation(confirm=True)
-    raise ToolError(
-        "Escalating to sev1 needs the user's confirmation. Ask them, and if they agree "
-        "call update_incident again with confirm_sev1 set to true."
+    _require_elicitation(ctx, "Escalating to sev1")
+    return Elicit(
+        f'Escalate incident #{incident_id} "{current.title}" from {current.severity} '
+        "to sev1? Sev1 means a full outage.",
+        Escalation,
     )
 
 
@@ -139,20 +141,13 @@ async def update_incident(
         Severity | None,
         Field(description="New severity, if the impact turned out bigger or smaller."),
     ] = None,
-    confirm_sev1: Annotated[
-        bool,
-        Field(
-            description="Leave it out. Set it to true only after update_incident returned an error "
-            "asking for it and the user then confirmed in the conversation."
-        ),
-    ] = False,
 ) -> UpdatedIncident:
     """Change the status, the severity or both of an incident.
 
     Every change is added to the incident timeline automatically. Escalating
-    to sev1 needs the user's confirmation; if they do not give it, nothing
-    changes and reason says why. To resolve an incident use resolve_incident,
-    which also records what fixed it.
+    to sev1 needs the user's confirmation in a dialog; if they do not give it,
+    nothing changes and reason says why. To resolve an incident use
+    resolve_incident, which also records what fixed it.
     """
     if status is None and severity is None:
         raise ToolError("Nothing to update. Pass a new status, a new severity or both.")
@@ -170,7 +165,7 @@ async def update_incident(
                 f"update_incident again to escalate it; tell the user it stays at {current.severity}.",
             )
             return UpdatedIncident(incident=current, updated=False, reason=reason)
-        note = _escalation_note(ctx, current, severity)
+        note = ESCALATION_NOTE if _is_escalation(current, severity) else None
         updated = storage.update_incident(conn, incident_id, status, severity, note)
     await notify_incident_changed(ctx, incident_id)
     return UpdatedIncident(incident=updated, updated=True)
@@ -178,20 +173,15 @@ async def update_incident(
 
 async def ask_for_resolution(
     incident_id: int, summary: str | None, ctx: Context
-) -> Resolution | Elicit[Resolution]:
+) -> Elicit[Resolution]:
     """Resolver for resolve_incident. With MRTR it runs again on the retry, so it only reads."""
     with closing(storage.connect()) as conn:
-        _check_not_resolved(conn, incident_id)
-    if summary:
-        return Resolution(summary=summary)
-    if not ctx.session.check_client_capability(ELICITATION):
-        raise ToolError(
-            "Resolving needs a summary of what fixed the incident. Ask the user, then call "
-            "resolve_incident again with summary."
-        )
+        current = _check_not_resolved(conn, incident_id)
+    _require_elicitation(ctx, "Resolving an incident")
     return Elicit(
-        f"How was incident #{incident_id} fixed? This goes into its timeline and postmortem.",
-        Resolution,
+        f'Resolve incident #{incident_id} "{current.title}"? Check what fixed it: it goes into '
+        "the timeline and the postmortem, and a resolved incident can no longer change.",
+        _resolution_form(summary),
     )
 
 
@@ -201,15 +191,16 @@ async def resolve_incident(
     ctx: Context,
     summary: Annotated[
         ResolutionSummary | None,
-        Field(description="What fixed it, if you know. If omitted, the user is asked."),
+        Field(description="What fixed it, if the conversation says. The user sees it and can correct it."),
     ] = None,
 ) -> ResolvedIncident:
     """Resolve an incident once the service is healthy again, recording what fixed it.
 
-    Pass summary if the conversation already says what fixed it; otherwise
-    the user is asked for it. The result includes the resolution that was
-    recorded, because an answer given to the server is not shown to you.
-    If resolved is false, nothing changed and reason says why.
+    The user always confirms in a dialog. Pass summary if the conversation
+    already says what fixed it: the user sees it written in and can correct
+    it. The result includes the resolution that was recorded, because an
+    answer given to the server is not shown to you. If resolved is false,
+    nothing changed and reason says why.
     """
     if not isinstance(resolution, AcceptedElicitation):
         with closing(storage.connect()) as conn:
@@ -228,18 +219,33 @@ async def resolve_incident(
     return ResolvedIncident(incident=resolved, resolved=True, resolution=text)
 
 
+def _require_elicitation(ctx: Context, action: str) -> None:
+    """Refuse when the user cannot be asked.
+
+    A flag the model could set would not protect anything: a poisoned runbook
+    could tell it to set it. Only a dialog the user answers counts.
+    """
+    if not ctx.session.check_client_capability(ELICITATION):
+        raise ToolError(
+            f"{action} needs the user's confirmation in a dialog, and this client cannot show one. "
+            "Nothing was changed. Tell the user to do it from a client that can ask them."
+        )
+
+
+def _resolution_form(proposal: str | None) -> type[Resolution]:
+    """The question to ask, with the model's summary already written in if it gave one."""
+    if not proposal:
+        return Resolution
+    return create_model("Resolution", __base__=Resolution, summary=(ResolutionSummary, proposal))
+
+
+def _is_escalation(current: Incident, severity: Severity | None) -> bool:
+    return severity == Severity.SEV1 and current.severity != Severity.SEV1
+
+
 def _refusal(answer: ElicitationResult, declined: str) -> str:
     """Why nothing changed: the user said no, or closed the question without choosing."""
     return NO_ANSWER if isinstance(answer, CancelledElicitation) else declined
-
-
-def _escalation_note(ctx: Context, current: Incident, severity: Severity | None) -> str | None:
-    """How an escalation to sev1 was confirmed, for the timeline and the postmortem."""
-    if severity != Severity.SEV1 or current.severity == Severity.SEV1:
-        return None
-    if ctx.session.check_client_capability(ELICITATION):
-        return "Escalation to sev1 confirmed by the user"
-    return "Escalation to sev1 confirmed in conversation"
 
 
 def _check_not_resolved(conn, incident_id: int) -> Incident:
@@ -272,5 +278,8 @@ def _decode_cursor(cursor: str) -> int:
 
 
 def register(mcp: MCPServer) -> None:
-    for tool in (create_incident, get_incident, list_incidents, update_incident, resolve_incident):
-        mcp.tool()(tool)
+    mcp.tool(annotations=ADDS)(create_incident)
+    mcp.tool(annotations=READS)(get_incident)
+    mcp.tool(annotations=READS)(list_incidents)
+    mcp.tool(annotations=CHANGES)(update_incident)
+    mcp.tool(annotations=CHANGES)(resolve_incident)

@@ -92,7 +92,8 @@ async def test_changes_and_notes_go_to_the_timeline(client: Client):
     assert await timeline_kinds(client, incident["id"]) == ["created", "status", "severity", "note"]
 
 
-async def test_resolved_incident_cannot_change(client: Client):
+async def test_resolved_incident_cannot_change(confirming_client: Client):
+    client = confirming_client
     incident = await create(client)
     await client.call_tool(
         "resolve_incident",

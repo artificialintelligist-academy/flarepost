@@ -8,6 +8,7 @@ import anyio
 from mcp.server import MCPServer
 from mcp.server.mcpserver import AcceptedElicitation, CancelledElicitation, Context, Elicit, ElicitationResult, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
 from flarepost import storage
@@ -16,7 +17,7 @@ from flarepost.errors import incident_not_found
 from flarepost.integrations import slack
 from flarepost.resources.incidents import notify_timeline_changed
 from flarepost.schemas import DraftId, IncidentId, SlackText
-from flarepost.tools.incidents import ELICITATION, NO_ANSWER
+from flarepost.tools.incidents import ADDS, CHANGES, ELICITATION, NO_ANSWER
 
 DRAFT_TTL = timedelta(hours=1)
 # Slack accepts about one incoming webhook message per second.
@@ -26,6 +27,14 @@ SLACK_INTERVAL_SECONDS = 1.0
 NO_ELICITATION = (
     "Posting to Slack needs the user's confirmation in a dialog, and this client cannot "
     "show one. Nothing was posted. Give the user the text so they can post it themselves."
+)
+# Posting adds a message outside Flarepost and cannot be taken back.
+POSTS = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True
+)
+# Publishing also uses up the draft, so it changes Flarepost as well.
+PUBLISHES = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True
 )
 
 
@@ -37,8 +46,7 @@ class Publication(BaseModel):
 
 def ask_before_posting(ctx: Context, incident: Incident, message: str) -> Elicit[Publication]:
     """Show the user the exact text that would be posted, or refuse if they cannot be asked."""
-    if not ctx.session.check_client_capability(ELICITATION):
-        raise ToolError(NO_ELICITATION)
+    _require_elicitation(ctx)
     return Elicit(
         f'Post this to Slack about incident #{incident.id} "{incident.title}"?\n\n{message}',
         Publication,
@@ -85,16 +93,41 @@ async def post_to_slack(
     return SlackPost(posted=True, entry=entry)
 
 
-async def post_incident_digest(ctx: Context) -> Digest:
+async def ask_to_post_digest(ctx: Context) -> Publication | Elicit[Publication]:
+    """Resolver for post_incident_digest. With MRTR it runs again on the retry, so it only reads."""
+    pending = _pending()
+    if not pending:
+        return Publication(confirm=True)  # nothing would be posted, nothing to confirm
+    _require_elicitation(ctx)
+    lines = "\n".join(f"#{incident.id} [{incident.severity}] {incident.title}" for incident in pending)
+    return Elicit(
+        f"Post the daily digest to Slack? It sends one message for each of these "
+        f"{len(pending)} incidents:\n\n{lines}",
+        Publication,
+    )
+
+
+async def post_incident_digest(
+    publication: Annotated[ElicitationResult[Publication], Resolve(ask_to_post_digest)],
+    ctx: Context,
+) -> Digest:
     """Post one Slack update for every incident that is not resolved yet, as a daily digest.
 
-    It takes about one second per incident, because Slack accepts about one
-    message per second, and it reports progress after each post. If the call
-    is cancelled, the incidents already posted stay posted and recorded in
-    their timelines, and the rest are not posted.
+    The user confirms the list of incidents first; if they do not, nothing is
+    posted and reason says why. It takes about one second per incident,
+    because Slack accepts about one message per second, and it reports
+    progress after each post. If the call is cancelled, the incidents already
+    posted stay posted and recorded in their timelines, and the rest are not
+    posted.
     """
-    with closing(storage.connect()) as conn:
-        pending = [i for i in reversed(storage.list_incidents(conn)) if i.status is not Status.RESOLVED]
+    pending = _pending()
+    if not _confirmed(publication):
+        reason = _refusal(
+            publication,
+            "The user was asked directly, in a dialog you do not see, and said no to posting the "
+            "daily digest. Nothing was posted. Do not post it again unless the user asks for it.",
+        )
+        return Digest(posted=[], total=len(pending), reason=reason)
     posted: list[int] = []
     for number, incident in enumerate(pending, start=1):
         if number > 1:
@@ -173,6 +206,17 @@ def discard_status_update(draft_id: DraftId) -> StatusUpdateDraft:
     return draft
 
 
+def _require_elicitation(ctx: Context) -> None:
+    if not ctx.session.check_client_capability(ELICITATION):
+        raise ToolError(NO_ELICITATION)
+
+
+def _pending() -> list[Incident]:
+    """Every incident that is not resolved yet, oldest first: what the digest posts."""
+    with closing(storage.connect()) as conn:
+        return [i for i in reversed(storage.list_incidents(conn)) if i.status is not Status.RESOLVED]
+
+
 def _confirmed(answer: ElicitationResult[Publication]) -> bool:
     return isinstance(answer, AcceptedElicitation) and answer.data.confirm
 
@@ -224,12 +268,9 @@ def _check_draft(draft_id: str, draft: StatusUpdateDraft | None) -> StatusUpdate
 
 
 def register(mcp: MCPServer) -> None:
-    for tool in (
-        post_to_slack,
-        post_incident_digest,
-        draft_status_update,
-        revise_status_update,
-        publish_status_update,
-        discard_status_update,
-    ):
-        mcp.tool()(tool)
+    mcp.tool(annotations=POSTS)(post_to_slack)
+    mcp.tool(annotations=POSTS)(post_incident_digest)
+    mcp.tool(annotations=ADDS)(draft_status_update)
+    mcp.tool(annotations=CHANGES)(revise_status_update)
+    mcp.tool(annotations=PUBLISHES)(publish_status_update)
+    mcp.tool(annotations=CHANGES)(discard_status_update)
