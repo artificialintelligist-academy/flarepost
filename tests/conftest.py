@@ -2,6 +2,7 @@
 
 import pytest
 from mcp import Client
+from mcp.types import ElicitResult
 
 from flarepost.server import mcp
 
@@ -20,4 +21,15 @@ def isolated_env(tmp_path, monkeypatch):
 @pytest.fixture
 async def client():
     async with Client(mcp, raise_exceptions=True) as connected:
+        yield connected
+
+
+async def say_yes(context, params):
+    """A user who confirms every question, for tests about what happens after they agree."""
+    return ElicitResult(action="accept", content={"confirm": True})
+
+
+@pytest.fixture
+async def confirming_client():
+    async with Client(mcp, raise_exceptions=True, elicitation_callback=say_yes) as connected:
         yield connected

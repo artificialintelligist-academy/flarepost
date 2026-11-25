@@ -1,11 +1,16 @@
 """Send incident updates to a Slack channel through an incoming webhook."""
 
+import logging
 import os
 
 import httpx
 
 WEBHOOK_ENV = "FLAREPOST_SLACK_WEBHOOK_URL"
 TIMEOUT_SECONDS = 10
+
+# httpx logs every request at INFO with its full URL, and the webhook URL is a
+# secret: anyone who has it can post to the channel. Keep only its warnings.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 class SlackError(Exception):

@@ -2,39 +2,87 @@
 
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 
 import anyio
 from mcp.server import MCPServer
-from mcp.server.mcpserver import Context
+from mcp.server.mcpserver import AcceptedElicitation, CancelledElicitation, Context, Elicit, ElicitationResult, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import BaseModel, Field
 
 from flarepost import storage
-from flarepost.domain import Digest, Incident, Status, StatusUpdateDraft, TimelineEntry
+from flarepost.domain import Digest, Incident, SlackPost, Status, StatusUpdateDraft
 from flarepost.errors import incident_not_found
 from flarepost.integrations import slack
 from flarepost.resources.incidents import notify_timeline_changed
 from flarepost.schemas import DraftId, IncidentId, SlackText
+from flarepost.tools.incidents import ELICITATION, NO_ANSWER
 
 DRAFT_TTL = timedelta(hours=1)
 # Slack accepts about one incoming webhook message per second.
 SLACK_INTERVAL_SECONDS = 1.0
+# A flag the model could set would not protect anything: a poisoned runbook
+# could tell it to set it. Only a dialog the user answers counts.
+NO_ELICITATION = (
+    "Posting to Slack needs the user's confirmation in a dialog, and this client cannot "
+    "show one. Nothing was posted. Give the user the text so they can post it themselves."
+)
 
 
-async def post_to_slack(incident_id: IncidentId, message: SlackText, ctx: Context) -> TimelineEntry:
+class Publication(BaseModel):
+    """What the user is asked before a message leaves for Slack."""
+
+    confirm: bool = Field(description="Post this message to Slack?")
+
+
+def ask_before_posting(ctx: Context, incident: Incident, message: str) -> Elicit[Publication]:
+    """Show the user the exact text that would be posted, or refuse if they cannot be asked."""
+    if not ctx.session.check_client_capability(ELICITATION):
+        raise ToolError(NO_ELICITATION)
+    return Elicit(
+        f'Post this to Slack about incident #{incident.id} "{incident.title}"?\n\n{message}',
+        Publication,
+    )
+
+
+async def ask_to_post(incident_id: int, message: str, ctx: Context) -> Publication | Elicit[Publication]:
+    """Resolver for post_to_slack. With MRTR it runs again on the retry, so it only reads."""
+    with closing(storage.connect()) as conn:
+        incident = storage.get_incident(conn, incident_id)
+    if incident is None:
+        raise incident_not_found(incident_id)
+    return ask_before_posting(ctx, incident, message)
+
+
+async def post_to_slack(
+    incident_id: IncidentId,
+    message: SlackText,
+    publication: Annotated[ElicitationResult[Publication], Resolve(ask_to_post)],
+    ctx: Context,
+) -> SlackPost:
     """Post an update about an incident to the team's Slack channel.
 
     Use it when people need to know: a new sev1 or sev2, an escalation, a
     mitigation or the resolution. The post is also added to the timeline.
-    If the user wants to review the text first, use draft_status_update.
+    The user always confirms the exact text first; if they do not, nothing is
+    posted and reason says why. If the user wants to work on the text first,
+    use draft_status_update.
     """
     with closing(storage.connect()) as conn:
         incident = storage.get_incident(conn, incident_id)
         if incident is None:
             raise incident_not_found(incident_id)
+        if not _confirmed(publication):
+            reason = _refusal(
+                publication,
+                "The user was asked directly, in a dialog you do not see, and said no to posting "
+                "this message. Nothing was posted. Do not post it again; ask the user what to change.",
+            )
+            return SlackPost(posted=False, reason=reason)
         _post(incident, message)
         entry = storage.add_note(conn, incident_id, f"Posted to Slack: {message}")
     await notify_timeline_changed(ctx, incident_id)
-    return entry
+    return SlackPost(posted=True, entry=entry)
 
 
 async def post_incident_digest(ctx: Context) -> Digest:
@@ -83,18 +131,38 @@ def revise_status_update(draft_id: DraftId, message: SlackText) -> StatusUpdateD
         return storage.revise_draft(conn, draft_id, message, _expiry())
 
 
-async def publish_status_update(draft_id: DraftId, ctx: Context) -> TimelineEntry:
-    """Post a draft to the team's Slack channel once the user has approved its text.
+async def ask_to_publish(draft_id: str, ctx: Context) -> Publication | Elicit[Publication]:
+    """Resolver for publish_status_update. With MRTR it runs again on the retry, so it only reads."""
+    with closing(storage.connect()) as conn:
+        draft = _check_draft(draft_id, storage.get_draft(conn, draft_id))
+        incident = storage.get_incident(conn, draft.incident_id)
+    return ask_before_posting(ctx, incident, draft.message)
 
-    The post is also added to the timeline, and the draft is used up: its
-    draft_id stops working.
+
+async def publish_status_update(
+    draft_id: DraftId,
+    publication: Annotated[ElicitationResult[Publication], Resolve(ask_to_publish)],
+    ctx: Context,
+) -> SlackPost:
+    """Post a draft to the team's Slack channel.
+
+    The user confirms the exact text first. If they do, the post is added to
+    the timeline and the draft is used up: its draft_id stops working. If they
+    do not, nothing is posted, the draft is kept and reason says why.
     """
     with closing(storage.connect()) as conn:
         draft = _live_draft(conn, draft_id)
+        if not _confirmed(publication):
+            reason = _refusal(
+                publication,
+                "The user was asked directly, in a dialog you do not see, and said no to posting "
+                "this draft. Nothing was posted and the draft is kept. Ask the user what to change.",
+            )
+            return SlackPost(posted=False, reason=reason)
         _post(storage.get_incident(conn, draft.incident_id), draft.message)
         entry = storage.finish_draft(conn, draft_id, f"Posted to Slack: {draft.message}")
     await notify_timeline_changed(ctx, draft.incident_id)
-    return entry
+    return SlackPost(posted=True, entry=entry)
 
 
 def discard_status_update(draft_id: DraftId) -> StatusUpdateDraft:
@@ -103,6 +171,15 @@ def discard_status_update(draft_id: DraftId) -> StatusUpdateDraft:
         draft = _live_draft(conn, draft_id)
         storage.delete_draft(conn, draft_id)
     return draft
+
+
+def _confirmed(answer: ElicitationResult[Publication]) -> bool:
+    return isinstance(answer, AcceptedElicitation) and answer.data.confirm
+
+
+def _refusal(answer: ElicitationResult, declined: str) -> str:
+    """Why nothing was posted: the user said no, or closed the question without choosing."""
+    return NO_ANSWER if isinstance(answer, CancelledElicitation) else declined
 
 
 def _post(incident: Incident, message: str) -> None:
@@ -124,14 +201,21 @@ def _expiry() -> datetime:
 
 
 def _live_draft(conn, draft_id: str) -> StatusUpdateDraft:
+    """The draft if it can still be used. An expired one is deleted on the way."""
     draft = storage.get_draft(conn, draft_id)
+    if draft is not None and draft.expires_at <= datetime.now(UTC):
+        storage.delete_draft(conn, draft_id)
+    return _check_draft(draft_id, draft)
+
+
+def _check_draft(draft_id: str, draft: StatusUpdateDraft | None) -> StatusUpdateDraft:
+    """Raise a clear error if the draft is gone or expired. It only reads, so resolvers can use it."""
     if draft is None:
         raise ToolError(
             f"Draft {draft_id} does not exist: it was already published or discarded, or the id "
             "is wrong. Start a new one with draft_status_update."
         )
     if draft.expires_at <= datetime.now(UTC):
-        storage.delete_draft(conn, draft_id)
         raise ToolError(
             f"Draft {draft_id} expired at {draft.expires_at:%H:%M} UTC, one hour after its last "
             "change. Start a new one with draft_status_update."

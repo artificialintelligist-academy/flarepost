@@ -80,3 +80,10 @@ class StatusUpdateDraft:
 class Digest:
     posted: list[int]
     total: int
+
+
+@dataclass(frozen=True)
+class SlackPost:
+    posted: bool
+    entry: TimelineEntry | None = None
+    reason: str | None = None

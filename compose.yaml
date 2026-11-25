@@ -20,9 +20,11 @@ services:
     # Only on this machine, one port per instance.
     ports:
       - "127.0.0.1:8000-8001:8000"
-    # Secrets arrive at run time from .env; environment wins over env_file.
-    env_file: .env
+    # Only the variables the server uses. Compose reads their values from .env
+    # when it starts; the Anthropic and GitHub keys stay with the copilot.
     environment:
+      FLAREPOST_SLACK_WEBHOOK_URL: ${FLAREPOST_SLACK_WEBHOOK_URL}
+      FLAREPOST_REQUEST_STATE_KEY: ${FLAREPOST_REQUEST_STATE_KEY}
       FLAREPOST_REDIS_URL: redis://redis:6379/0
     volumes:
       - data:/data

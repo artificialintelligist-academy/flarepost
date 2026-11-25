@@ -52,7 +52,8 @@ async def test_nothing_is_posted_until_the_draft_is_published(client: Client, se
     assert await timeline(client, incident_id) == ["Incident opened as sev2"]
 
 
-async def test_a_draft_is_revised_and_then_published(client: Client, sent: list[str]):
+async def test_a_draft_is_revised_and_then_published(confirming_client: Client, sent: list[str]):
+    client = confirming_client
     incident_id = await create(client)
     draft_id = await draft(client, incident_id)
 
@@ -61,12 +62,13 @@ async def test_a_draft_is_revised_and_then_published(client: Client, sent: list[
     )
     result = await client.call_tool("publish_status_update", {"draft_id": draft_id})
 
-    assert not result.is_error
+    assert result.structured_content["posted"] is True
     assert sent[0].endswith("Rolled back the payments deploy.")
     assert (await timeline(client, incident_id))[-1] == "Posted to Slack: Rolled back the payments deploy."
 
 
-async def test_a_published_draft_cannot_be_published_again(client: Client, sent: list[str]):
+async def test_a_published_draft_cannot_be_published_again(confirming_client: Client, sent: list[str]):
+    client = confirming_client
     draft_id = await draft(client, await create(client))
     await client.call_tool("publish_status_update", {"draft_id": draft_id})
 
@@ -77,7 +79,8 @@ async def test_a_published_draft_cannot_be_published_again(client: Client, sent:
     assert len(sent) == 1
 
 
-async def test_a_discarded_draft_is_gone(client: Client, sent: list[str]):
+async def test_a_discarded_draft_is_gone(confirming_client: Client, sent: list[str]):
+    client = confirming_client
     draft_id = await draft(client, await create(client))
     await client.call_tool("discard_status_update", {"draft_id": draft_id})
 
@@ -98,7 +101,8 @@ async def test_an_expired_draft_says_it_expired(client: Client, monkeypatch):
     assert "draft_status_update" in result.content[0].text
 
 
-async def test_a_failed_publish_keeps_the_draft(client: Client):
+async def test_a_failed_publish_keeps_the_draft(confirming_client: Client):
+    client = confirming_client
     draft_id = await draft(client, await create(client))
 
     failed = await client.call_tool("publish_status_update", {"draft_id": draft_id})
